@@ -9,8 +9,10 @@ import qs.Ui
 // header, 42 px footer, centred horizontally about a quarter down the
 // screen, coloured by the active Omarchy theme's [menu] tokens.
 //
-// Views form a navigation stack: root search, a pushed Omarchy submenu, or
-// the alias editor. Each view keeps its own query.
+// Views form a navigation stack: root search, a pushed Omarchy submenu,
+// Search Quicklinks, or an editor (alias, quicklink form, arguments,
+// import, delete confirm). Each view keeps its own query. The header is
+// the only text field. A form uses it for the focused field.
 OverlayWindow {
   id: window
 
@@ -52,8 +54,25 @@ OverlayWindow {
 
   readonly property bool atRoot: window.stack.length === 1
   readonly property bool compact: window.general.windowMode === "compact" && window.atRoot && !window.query
-  readonly property string placeholder: window.view.kind === "alias" ? "Type an alias, then press ↵"
-    : (window.view.kind === "menu" ? "Search " + window.view.title + "…" : "Search for apps and commands…")
+  readonly property bool editor: {
+    var kind = window.view.kind
+    return kind === "alias" || kind === "quicklink-form" || kind === "quicklink-args" || kind === "quicklink-import" || kind === "confirm-delete-quicklink"
+  }
+  readonly property bool formActive: window.view.kind === "quicklink-form" || window.view.kind === "quicklink-args"
+  readonly property string placeholder: {
+    var kind = window.view.kind
+    if (kind === "alias") return "Type an alias, then press ↵"
+    if (kind === "quicklink-import") return "Paste JSON or a file path, then press ↵"
+    if (kind === "confirm-delete-quicklink") return "Press ↵ to delete"
+    if (window.formActive) {
+      var fields = window.view.fields || []
+      var field = fields[window.view.focus || 0]
+      return field && field.label ? field.label : "Type a value"
+    }
+    if (kind === "quicklinks") return "Search quicklinks…"
+    if (kind === "menu") return "Search " + window.view.title + "…"
+    return "Search for apps and commands…"
+  }
 
   readonly property int cardWidth: Math.min(px(750), width - Style.gapsOut * 2)
   readonly property int fullHeight: Math.min(px(475), height - Style.gapsOut * 2)
@@ -101,11 +120,21 @@ OverlayWindow {
 
   // ---------------------------------------------------------- navigation
 
+  function initialQuery(next) {
+    if (!next) return ""
+    if (next.kind === "alias" || next.kind === "quicklink-import") return next.value || ""
+    if (next.fields && next.fields.length) {
+      var field = next.fields[next.focus || 0]
+      return field && field.value ? String(field.value) : ""
+    }
+    return ""
+  }
+
   function push(next) {
     var saved = window.stack.slice()
     saved[saved.length - 1] = Object.assign({}, window.view, { query: window.query, selectedIndex: window.selectedIndex })
     window.stack = saved.concat([next])
-    window.query = next.kind === "alias" ? (next.value || "") : ""
+    window.query = window.initialQuery(next)
     window.rebuild(true)
   }
 
@@ -125,7 +154,7 @@ OverlayWindow {
     pointerGate.reset()
     var keepId = !resetSelection && window.selectedRow ? window.selectedRow.itemId : ""
     rows.clear()
-    if (window.view.kind === "alias") { window.select(-1); return }
+    if (window.editor) { window.select(-1); return }
     var result = window.backend.callSync("rootSearch.search", { query: window.query, view: window.view })
     if (!result.ok) {
       window.showToast("failure", result.error)
@@ -266,6 +295,83 @@ OverlayWindow {
     window.rebuild(false)
   }
 
+  function stashField() {
+    var view = window.view
+    if (!view.fields) return
+    var focus = view.focus || 0
+    var fields = []
+    for (var i = 0; i < view.fields.length; i++) {
+      var copy = ({})
+      for (var k in view.fields[i]) copy[k] = view.fields[i][k]
+      if (i === focus) copy.value = window.query
+      fields.push(copy)
+    }
+    var stack = window.stack.slice()
+    stack[stack.length - 1] = Object.assign({}, view, { fields: fields })
+    window.stack = stack
+  }
+
+  function setFormFocus(index) {
+    window.stashField()
+    var view = window.view
+    var fields = view.fields || []
+    if (index < 0 || index >= fields.length) return
+    var stack = window.stack.slice()
+    stack[stack.length - 1] = Object.assign({}, view, { focus: index })
+    window.stack = stack
+    window.query = fields[index].value ? String(fields[index].value) : ""
+  }
+
+  function formPayload() {
+    window.stashField()
+    var data = ({})
+    var fields = window.view.fields || []
+    for (var i = 0; i < fields.length; i++) data[fields[i].key] = fields[i].value
+    return data
+  }
+
+  function saveQuicklink() {
+    var data = window.formPayload()
+    var editing = window.view.mode === "edit"
+    if (editing) data.id = window.view.quicklinkId
+    var r = window.backend.callSync(editing ? "quicklinks.update" : "quicklinks.save", data)
+    if (!r.ok) { window.showToast("failure", r.error); return }
+    window.pop()
+    window.showToast("success", editing ? "Quicklink updated" : "Quicklink created")
+    window.rebuild(false)
+  }
+
+  function submitQuicklinkArgs() {
+    var args = window.formPayload()
+    var r = window.backend.callSync("quicklinks.open", { id: window.view.quicklinkId, values: args })
+    if (!r.ok) { window.showToast("failure", r.error); return }
+    var outcome = r.data || ({})
+    if (outcome.push) { window.push(outcome.push); return }
+    if (outcome.toast && !outcome.close) window.showToast(outcome.toast.style, outcome.toast.title)
+    if (outcome.close) {
+      if (outcome.hud) window.hud(outcome.hud)
+      window.dismissRequested()
+    }
+  }
+
+  function importQuicklinks() {
+    var r = window.backend.callSync("quicklinks.import", { text: window.query })
+    if (!r.ok) { window.showToast("failure", r.error); return }
+    var added = r.data && r.data.added ? r.data.added : 0
+    var skipped = r.data && r.data.skipped ? r.data.skipped : 0
+    window.pop()
+    window.showToast("success", added + " added, " + skipped + " skipped")
+    window.rebuild(false)
+  }
+
+  function confirmDelete() {
+    var r = window.backend.callSync("quicklinks.delete", { id: window.view.quicklinkId })
+    if (!r.ok) { window.showToast("failure", r.error); return }
+    window.pop()
+    window.showToast("success", "Quicklink deleted")
+    window.rebuild(false)
+  }
+
   // ------------------------------------------------------------ feedback
 
   function showToast(style, title) {
@@ -290,7 +396,7 @@ OverlayWindow {
     if (window.query === next) return
     window.query = next
     window.historyIndex = -1
-    window.rebuild(true)
+    if (!window.editor) window.rebuild(true)
   }
 
   // ↑ on an empty root walks back through queries that launched something.
@@ -320,7 +426,7 @@ OverlayWindow {
       return
     }
     // pop-back-or-close [O]: clear the search, then go back, then close.
-    if (window.query && window.view.kind !== "alias") window.setQuery("")
+    if (window.query && !window.editor) window.setQuery("")
     else if (!window.atRoot) window.pop()
     else window.dismissRequested()
   }
@@ -349,9 +455,27 @@ OverlayWindow {
       return true
     }
 
-    if (window.view.kind === "alias") {
-      if (enter) { window.saveAlias(); return true }
-      if (key === Qt.Key_Space) return true
+    if (window.editor) {
+      if (window.view.kind === "confirm-delete-quicklink") {
+        if (enter) window.confirmDelete()
+        return true
+      }
+      if (window.formActive) {
+        var focus = window.view.focus || 0
+        var last = (window.view.fields || []).length - 1
+        if (enter && (ctrl || focus >= last)) {
+          if (window.view.kind === "quicklink-args") window.submitQuicklinkArgs()
+          else window.saveQuicklink()
+          return true
+        }
+        if (enter || key === Qt.Key_Down || key === Qt.Key_Tab) { window.setFormFocus(focus + 1); return true }
+        if (key === Qt.Key_Up || key === Qt.Key_Backtab) { window.setFormFocus(focus - 1); return true }
+      } else if (window.view.kind === "alias") {
+        if (enter) { window.saveAlias(); return true }
+        if (key === Qt.Key_Space) return true
+      } else if (window.view.kind === "quicklink-import") {
+        if (enter) { window.importQuicklinks(); return true }
+      }
     } else {
       if (ctrl && key === Qt.Key_K) { window.toggleActionPanel(); return true }
       if (enter && ctrl && shift) { window.performNth(2); return true }
@@ -372,7 +496,7 @@ OverlayWindow {
       if (key === Qt.Key_PageUp) { window.move(-8); return true }
       if (key === Qt.Key_PageDown) { window.move(8); return true }
       if (ctrl && shift && key === Qt.Key_F) { window.performIfOffered(["favorite-add", "favorite-remove"]); return true }
-      if (ctrl && shift && key === Qt.Key_C) { window.performIfOffered(["copy-command", "copy-id"]); return true }
+      if (ctrl && shift && key === Qt.Key_C) { window.performIfOffered(["copy-command", "copy-id", "copy-link"]); return true }
       if (alt && shift && key === Qt.Key_D) { window.performIfOffered(["disable"]); return true }
       if (ctrl && key >= Qt.Key_1 && key <= Qt.Key_9) {
         var target = window.nthItem(key - Qt.Key_0)
@@ -382,7 +506,7 @@ OverlayWindow {
     }
 
     if (Util.editsFilter(event, window.query)) { window.setQuery(Util.editedFilter(event, window.query)); return true }
-    if (key === Qt.Key_Backspace && !window.query && !window.atRoot) { window.pop(); return true }
+    if (key === Qt.Key_Backspace && !window.query && !window.atRoot && !window.editor) { window.pop(); return true }
     if (window.isTyping(event)) { window.setQuery(window.query + event.text); return true }
     return false
   }
@@ -396,7 +520,7 @@ OverlayWindow {
   // edited): refresh what is on screen without losing the selection.
   Connections {
     target: window.backend
-    function onCandidatesRevisionChanged() { if (window.shown && !window.actionPanelOpen) window.rebuild(false) }
+    function onCandidatesRevisionChanged() { if (window.shown && !window.actionPanelOpen && !window.editor) window.rebuild(false) }
   }
 
   // ================================================================== UI
@@ -538,12 +662,73 @@ OverlayWindow {
       anchors.leftMargin: card.borderLeft + window.px(8)
       anchors.rightMargin: card.borderRight + window.px(8)
 
+      Column {
+        id: formColumn
+        visible: window.formActive
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.margins: window.px(8)
+        spacing: window.px(4)
+
+        Repeater {
+          model: window.formActive ? (window.view.fields || []) : []
+          delegate: Item {
+            required property var modelData
+            required property int index
+            width: formColumn.width
+            height: window.px(42)
+
+            Rectangle {
+              anchors.fill: parent
+              radius: Math.max(Style.cornerRadius, window.px(6))
+              color: index === (window.view.focus || 0) ? window.look.selectedBackground : "transparent"
+            }
+
+            Text {
+              id: fieldLabel
+              anchors.left: parent.left
+              anchors.leftMargin: window.px(12)
+              anchors.verticalCenter: parent.verticalCenter
+              width: window.px(110)
+              textFormat: Text.PlainText
+              text: modelData.label || ""
+              color: window.look.foreground
+              opacity: 0.55
+              font.family: window.look.fontFamily
+              font.pixelSize: Math.round(Style.font.body * window.zoom)
+              elide: Text.ElideRight
+            }
+
+            Text {
+              anchors.left: fieldLabel.right
+              anchors.leftMargin: window.px(8)
+              anchors.right: parent.right
+              anchors.rightMargin: window.px(12)
+              anchors.verticalCenter: parent.verticalCenter
+              textFormat: Text.PlainText
+              text: index === (window.view.focus || 0) ? window.query : String(modelData.value || "")
+              color: window.look.foreground
+              font.family: window.look.fontFamily
+              font.pixelSize: Math.round(Style.font.title * window.zoom)
+              elide: Text.ElideRight
+            }
+
+            MouseArea {
+              anchors.fill: parent
+              cursorShape: Qt.PointingHandCursor
+              onClicked: window.setFormFocus(index)
+            }
+          }
+        }
+      }
+
       ListView {
         id: list
         anchors.fill: parent
         anchors.topMargin: window.px(4)
         anchors.bottomMargin: window.px(4)
-        visible: window.view.kind !== "alias"
+        visible: !window.editor
         clip: true
         model: rows
         boundsBehavior: Flickable.StopAtBounds
@@ -564,21 +749,20 @@ OverlayWindow {
       Column {
         anchors.centerIn: parent
         spacing: window.px(8)
-        visible: window.view.kind === "alias" || rows.count === 0
+        visible: !window.formActive && (window.editor || rows.count === 0)
 
         Text {
           anchors.horizontalCenter: parent.horizontalCenter
           textFormat: Text.PlainText
-          text: window.view.kind === "alias" ? "" : ""
+          text: window.view.kind === "alias" ? "" : (window.view.kind === "confirm-delete-quicklink" ? "" : "")
           color: window.look.accent
-          font.family: window.view.kind === "alias" ? window.look.fontFamily : "omarchy"
+          font.family: window.view.kind === "alias" || window.view.kind === "confirm-delete-quicklink" ? window.look.fontFamily : "omarchy"
           font.pixelSize: window.px(28)
         }
         Text {
           anchors.horizontalCenter: parent.horizontalCenter
           textFormat: Text.PlainText
-          text: window.view.kind === "alias" ? window.view.title
-            : (window.backend.ready ? "No results" : "Loading…")
+          text: window.editor ? window.view.title : (window.backend.ready ? "No results" : "Loading…")
           color: window.look.foreground
           font.family: window.look.fontFamily
           font.pixelSize: Math.round(Style.font.title * window.zoom)
@@ -586,7 +770,9 @@ OverlayWindow {
         Text {
           anchors.horizontalCenter: parent.horizontalCenter
           textFormat: Text.PlainText
-          text: window.view.kind === "alias" ? "Typing the alias exactly in the root search puts this command on top. Leave it empty to remove it." : ""
+          text: window.view.kind === "alias" ? "Typing the alias exactly in the root search puts this command on top. Leave it empty to remove it."
+            : (window.view.kind === "quicklink-import" ? "Paste a JSON array, or type a path to one. A repeated name and link is skipped."
+            : (window.view.kind === "confirm-delete-quicklink" ? "Press ↵ to delete this quicklink. Esc cancels." : ""))
           visible: text.length > 0
           color: window.look.foreground
           opacity: 0.55
@@ -655,6 +841,10 @@ OverlayWindow {
           window.selectedRow
           window.backend.storeRevision
           if (window.view.kind === "alias") return { title: "Save Alias", shortcut: "↵" }
+          if (window.view.kind === "quicklink-form") return { title: "Save Quicklink", shortcut: "↵" }
+          if (window.view.kind === "quicklink-args") return { title: "Open Quicklink", shortcut: "↵" }
+          if (window.view.kind === "quicklink-import") return { title: "Import", shortcut: "↵" }
+          if (window.view.kind === "confirm-delete-quicklink") return { title: "Delete Quicklink", shortcut: "↵" }
           var list = window.actionsForSelected()
           return list.length ? list[0] : null
         }
@@ -676,14 +866,14 @@ OverlayWindow {
           zoom: window.zoom
         }
         Rectangle {
-          visible: window.view.kind !== "alias"
+          visible: !window.editor
           anchors.verticalCenter: parent.verticalCenter
           width: 1
           height: window.px(14)
           color: Util.alpha(window.look.foreground, 0.2)
         }
         Text {
-          visible: window.view.kind !== "alias"
+          visible: !window.editor
           anchors.verticalCenter: parent.verticalCenter
           textFormat: Text.PlainText
           text: "Actions"
@@ -693,7 +883,7 @@ OverlayWindow {
           font.pixelSize: Math.round(Style.font.bodySmall * window.zoom)
         }
         KeyHint {
-          visible: window.view.kind !== "alias"
+          visible: !window.editor
           anchors.verticalCenter: parent.verticalCenter
           keys: "Ctrl K"
           color: window.look.foreground

@@ -122,11 +122,13 @@ Works:
   - A launch from root clears the query [I].
   - A row is selected on hover only after a real pointer move (Omarchy's PointerMoveGate).
 - **Latency:** show → mapped in 37–44 ms, hide in 9–25 ms (`tests/smoke.sh`).
-- **Tests:** 65 unit tests (`node --test tests/`).
+- **Tests:** 80 passing unit tests, 1 skipped (`node --test tests/*.test.js`). The skip is the installed Omarchy menu parse, which needs the live shell.
+- **Quicklinks** (`db/quicklinks.json`, migration `quicklinks`): Create, Search, Edit, Delete, Import, Export. Each saved link is a root-search row (`type: quicklink`, priority 3) with a favicon hint for `https` links (`icons.duckduckgo.com`). A URL query adds Open in Browser and Create Quicklink. Open runs `xdg-open`, or `gio launch <desktop-id> <url>`. Arguments are a pushed form (Ctrl+Enter saves, Enter on the last field submits). Placeholders cover argument, legacy `{word}` / `{word:default}`, clipboard, selection, uuid, and date/time/datetime/day, percent-encoded unless `| raw`. Import JSON is `[{name, link, iconName?, openWith?}]`. A duplicate is the same name and the same link [D].
 
 Stubbed / not yet:
 - Keystroke buffering before the surface maps. Keys sent within ~40 ms of the hotkey go to the window underneath.
 - Vim navigation bindings, Ctrl+P dropdown, Ctrl+T, Ctrl+Shift+K, inline argument pills, alerts.
+- Quicklink gaps: inline argument pills (the form stands in), tags, pins, open count, link previews, clipboard history so `{clipboard offset=N}` only sees the text copied before show, selected text (`{selection}` is always empty), `{snippet}` and `{calculator}` (refused until those features exist). A disabled quicklink is re-enabled by editing `settings.json`. Favicons are a display URL. If the image fails, the link glyph stays.
 - No settings window, so you can't re-enable a disabled command except by editing `~/.local/share/oma-cast/db/settings.json` (delete its `enabled: false`). That's Phase 2.
 - No deep links (`oma-cast://`); Phase 2 or 9.
 

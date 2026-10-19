@@ -67,18 +67,20 @@ Item {
       anchors.verticalCenter: parent.verticalCenter
 
       Image {
+        id: iconImage
         anchors.fill: parent
-        visible: row.iconName.length > 0 && row.glyph.length === 0
+        readonly property bool remote: row.iconName.indexOf("://") >= 0
+        visible: remote ? status === Image.Ready : (row.iconName.length > 0 && row.glyph.length === 0)
         fillMode: Image.PreserveAspectFit
         asynchronous: true
         sourceSize.width: width * Screen.devicePixelRatio
         sourceSize.height: height * Screen.devicePixelRatio
-        source: !visible ? "" : (row.appLibrary ? row.appLibrary.iconSource(row.iconName) : Quickshell.iconPath(row.iconName, "application-x-executable"))
+        source: row.iconName.length === 0 ? "" : (remote ? row.iconName : (row.appLibrary ? row.appLibrary.iconSource(row.iconName) : Quickshell.iconPath(row.iconName, "application-x-executable")))
       }
 
       Text {
         anchors.centerIn: parent
-        visible: row.glyph.length > 0
+        visible: row.glyph.length > 0 && !iconImage.visible
         textFormat: Text.PlainText
         text: row.glyph
         color: row.selected ? row.look.accent : row.look.foreground

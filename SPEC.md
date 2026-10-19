@@ -492,9 +492,9 @@ Grammar: `{keyword opt="v" opt2='v' | modifier | modifier}`. Quotes accepted: `"
 ### 8.4 Quicklinks [O]
 - Fields: name, link (a template), icon (favicon fetched or an app icon), open with (desktop id), tags, open count.
 - Arguments come from placeholders and are percent-encoded unless `| raw` [I].
-- Shown in root search with inline argument pills. Can be a fallback command.
+- Shown in root search. Arguments open a pushed form [D]. Inline pills are still open. Can be a fallback command.
 - Settings: Show Link Previews, Pass Selected Text as Argument.
-- **Import/Export** JSON: `[{name, link, openWith?}]` [I, keep compatible with Raycast's documented format].
+- **Import/Export** JSON: `[{name, link, iconName?, openWith?}]` [I, Raycast's documented fields]. A duplicate is the same name and the same link [D].
 
 ### 8.5 Window management maths [O command list, I geometry]
 - Work area = monitor geometry minus reserved space (Hyprland `monitors -j` `reserved`; KDE/X11 `_NET_WORKAREA`).

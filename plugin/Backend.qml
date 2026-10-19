@@ -10,6 +10,7 @@ import "core/Ranker.js" as Ranker
 import "core/Frecency.js" as Frecency
 import "core/OmarchyMenu.js" as OmarchyMenu
 import "core/RootSearch.js" as RootSearch
+import "core/Quicklinks.js" as Quicklinks
 import "services"
 
 // The clone's backend, in-process (SPEC §2.0). It owns the paths, the host
@@ -29,7 +30,9 @@ Item {
 
   property var config: Schema.withConfigDefaults(null)
   property bool directoriesReady: false
-  readonly property bool ready: directoriesReady && settingsStore.loaded && frecencyStore.loaded
+  readonly property bool ready: directoriesReady && settingsStore.loaded && frecencyStore.loaded && quicklinksStore.loaded
+  // Text copied before the launcher was shown. [D] No clipboard history, so offset > 0 stays empty.
+  property string clipboardText: ""
 
   readonly property var registry: Rpc.createRegistry()
   readonly property double startedAt: Date.now()
@@ -80,6 +83,10 @@ Item {
     for (var i = 0; i < apps.length; i++) if (apps[i] && apps[i].id) next.push(RootSearch.appCandidate(apps[i]))
     next = next.concat(RootSearch.menuCandidates(menuSource.tree, menuSource.guards, menuSource.providerItems, backend.deps))
     for (var b = 0; b < RootSearch.BUILTINS.length; b++) next.push(RootSearch.builtinCandidate(RootSearch.BUILTINS[b]))
+    if (quicklinksStore.loaded) {
+      var links = Quicklinks.list(quicklinksStore.doc)
+      for (var q = 0; q < links.length; q++) next.push(Quicklinks.toCandidate(links[q]))
+    }
     var byId = ({})
     for (var j = 0; j < next.length; j++) byId[next[j].id] = next[j]
     backend.candidates = next
@@ -151,6 +158,139 @@ Item {
     return candidate.kind === "omarchy-link" ? candidate.target : candidate.menuId
   }
 
+  function timeZone() {
+    try {
+      var zone = Intl.DateTimeFormat().resolvedOptions().timeZone
+      return zone || "UTC"
+    } catch (e) {
+      return "UTC"
+    }
+  }
+
+  function quicklinkById(id) {
+    if (!quicklinksStore.loaded) return null
+    return Quicklinks.get(quicklinksStore.doc, id)
+  }
+
+  function quicklinkForm(mode, item) {
+    return {
+      kind: "quicklink-form",
+      mode: mode,
+      quicklinkId: item && item.id ? item.id : "",
+      title: mode === "edit" ? "Edit Quicklink" : "Create Quicklink",
+      focus: 0,
+      fields: [
+        { key: "name", label: "Name", value: item && item.name ? item.name : "" },
+        { key: "link", label: "Link", value: item && item.link ? item.link : "" },
+        { key: "openWith", label: "Open with", value: item && item.openWith ? item.openWith : "" }
+      ]
+    }
+  }
+
+  function argumentForm(item, parsed) {
+    return {
+      kind: "quicklink-args",
+      quicklinkId: item.id,
+      title: item.name,
+      focus: 0,
+      fields: parsed.arguments.map(function(arg) {
+        var label = arg.name
+        if (arg.options && arg.options.length)
+          label = arg.name + " (" + arg.options.map(function(option) { return option.title }).join(", ") + ")"
+        return { key: arg.name, label: label, value: arg.defaultValue || "" }
+      })
+    }
+  }
+
+  // hasArgs is true once the argument form has been submitted, even if a value is empty.
+  function openQuicklink(candidate, args, hasArgs) {
+    var item = backend.quicklinkById(candidate.quicklinkId || String(candidate.id || "").replace(/^quicklink:/, ""))
+    if (!item) return { toast: { style: "failure", title: "Quicklink not found" } }
+    var parsed = Quicklinks.parseLink(item.link)
+    if (parsed.error) return { toast: { style: "failure", title: parsed.error } }
+    if (parsed.arguments.length > 0 && !hasArgs) return { push: backend.argumentForm(item, parsed) }
+    var values = args || ({})
+    for (var i = 0; i < parsed.arguments.length; i++) {
+      var arg = parsed.arguments[i]
+      if (values[arg.name] == null || values[arg.name] === "") {
+        if (arg.defaultValue) values[arg.name] = arg.defaultValue
+        else if (arg.required) return { toast: { style: "failure", title: arg.name + " is required" } }
+      }
+    }
+    var expanded = Quicklinks.expand(item.link, {
+      now: Date.now(),
+      timeZone: backend.timeZone(),
+      arguments: values,
+      clipboard: backend.clipboardText ? [backend.clipboardText] : [],
+      selection: "",
+      uuid: Quicklinks.randomUuid()
+    })
+    if (!expanded.ok) return { toast: { style: "failure", title: expanded.error || "Could not expand link" } }
+    Util.execArgv(Quicklinks.openArgv(item.openWith, expanded.url, backend.paths.home))
+    backend.recordVisit(candidate.id, "")
+    return { close: true }
+  }
+
+  function quicklinkCommand(name) {
+    if (name === "create") return { push: backend.quicklinkForm("create", null) }
+    if (name === "search") return { push: { kind: "quicklinks", title: "Quicklinks" } }
+    if (name === "import") return { push: { kind: "quicklink-import", title: "Import Quicklinks", value: "" } }
+    if (name === "export") return backend.exportQuicklinks()
+    return { toast: { style: "failure", title: "Unknown quicklink command" } }
+  }
+
+  function exportQuicklinks() {
+    if (!quicklinksStore.loaded) return { toast: { style: "failure", title: "Quicklinks are not loaded" } }
+    var json = JSON.stringify(Quicklinks.exportList(quicklinksStore.doc), null, 2) + "\n"
+    exportFile.path = backend.paths.db + "/quicklinks-export.json"
+    exportFile.setText(json)
+    Util.execArgv(["wl-copy", "--", json])
+    return { toast: { style: "success", title: "Exported quicklinks" } }
+  }
+
+  function readTextFile(path) {
+    importFile.readError = ""
+    if (importFile.path === path) importFile.reload()
+    else importFile.path = path
+    var text = importFile.text()
+    if (importFile.readError) return { error: importFile.readError, text: "" }
+    return { error: "", text: text }
+  }
+
+  function importQuicklinksText(text) {
+    if (!quicklinksStore.loaded) throw new Error("quicklinks not loaded")
+    if (quicklinksStore.readOnly) throw new Error("quicklinks are read-only")
+    var raw = String(text || "").trim()
+    if (!raw) throw new Error("Paste a JSON array or a file path")
+    var body = raw
+    if (raw.charAt(0) !== "[" && raw.charAt(0) !== "{") {
+      var path = raw
+      if (path === "~" || path.indexOf("~/") === 0) path = backend.paths.home + path.slice(1)
+      var read = backend.readTextFile(path)
+      if (read.error) throw new Error("Could not read " + path + ": " + read.error)
+      body = read.text
+    }
+    var result = Quicklinks.importText(quicklinksStore.doc, body, { now: Date.now() })
+    if (result.error) throw new Error(result.error)
+    quicklinksStore.update(function() { return result.doc })
+    backend.emit("quicklinks.updated", null)
+    return { added: result.added, skipped: result.skipped }
+  }
+
+  function urlAction(id, query) {
+    var url = RootSearch.normalizedUrl(query)
+    if (id === "url:open") {
+      Util.execArgv(Quicklinks.openArgv("", url, backend.paths.home))
+      return { close: true }
+    }
+    return { push: backend.quicklinkForm("create", { link: url }) }
+  }
+
+  function refreshClipboard() {
+    if (pasteProc.running) pasteProc.running = false
+    pasteProc.running = true
+  }
+
   // One action on one row. Returns what the UI should do next:
   // { close, push: {view}, toast: {style, title}, hud: "text" }.
   function performAction(data) {
@@ -182,8 +322,11 @@ Item {
           return { push: { kind: "menu", menuId: target.id, title: target.label } }
         case "builtin":
           backend.recordVisit(id, query)
-          if (candidate.run.summon) backend.summonPlugin(candidate.run.summon, candidate.run.payload || "{}")
+          if (candidate.run && candidate.run.quicklink) return backend.quicklinkCommand(candidate.run.quicklink)
+          if (candidate.run && candidate.run.summon) backend.summonPlugin(candidate.run.summon, candidate.run.payload || "{}")
           return { close: true }
+        case "quicklink":
+          return backend.openQuicklink(candidate, null, false)
         case "fallback":
           Util.execArgv(["omarchy-launch-browser", RootSearch.fallbackUrl(candidate, query)])
           return { close: true }
@@ -197,8 +340,16 @@ Item {
         return { close: true }
       case "copy-command":
       case "copy-id":
-        Util.execArgv(["wl-copy", "--", action === "copy-id" ? candidate.appId + ".desktop" : candidate.action])
+      case "copy-link":
+        var copied = action === "copy-id" ? candidate.appId + ".desktop" : (action === "copy-link" ? (candidate.link || candidate.subtitle || "") : candidate.action)
+        Util.execArgv(["wl-copy", "--", copied])
         return { close: true, hud: "Copied to Clipboard" }
+      case "edit-quicklink":
+        var editing = backend.quicklinkById(candidate.quicklinkId)
+        if (!editing) return { toast: { style: "failure", title: "Quicklink not found" } }
+        return { push: backend.quicklinkForm("edit", editing) }
+      case "delete-quicklink":
+        return { push: { kind: "confirm-delete-quicklink", quicklinkId: candidate.quicklinkId, title: "Delete " + candidate.title + "?" } }
       case "favorite-add":
       case "favorite-remove":
       case "favorite-up":
@@ -240,10 +391,12 @@ Item {
         var t0 = Date.now()
         JSON.stringify(settingsStore.doc)
         JSON.stringify(frecencyStore.doc)
+        JSON.stringify(quicklinksStore.doc)
         return {
           workMs: Date.now() - t0,
           settings: { loaded: settingsStore.loaded, readOnly: settingsStore.readOnly, error: settingsStore.lastError },
           frecency: { loaded: frecencyStore.loaded, readOnly: frecencyStore.readOnly, error: frecencyStore.lastError },
+          quicklinks: { loaded: quicklinksStore.loaded, readOnly: quicklinksStore.readOnly, error: quicklinksStore.lastError },
           // Kept for Phase 0 callers.
           loaded: settingsStore.loaded, readOnly: settingsStore.readOnly, error: settingsStore.lastError
         }
@@ -312,13 +465,18 @@ Item {
         var ctx = backend.searchContext()
         var sections = view && view.kind === "menu"
           ? RootSearch.submenuSections(backend.candidates, view.menuId, query, ctx, backend.deps)
-          : RootSearch.rootSections(backend.candidates, query, ctx, backend.deps)
+          : view && view.kind === "quicklinks"
+            ? RootSearch.quicklinkSections(backend.candidates, query, ctx, backend.deps)
+            : RootSearch.rootSections(backend.candidates, query, ctx, backend.deps)
         return sections.map(function(s) {
           return { id: s.id, title: s.title, rows: s.rows.map(function(r) { return r.candidate }) }
         })
       },
       getActions: function(data) {
-        var candidate = backend.decorated(String(data && data.id || ""))
+        var rowId = String(data && data.id || "")
+        if (rowId === "url:open") return RootSearch.actionsFor({ kind: "url-open", title: "Open in Browser" })
+        if (rowId === "url:create") return RootSearch.actionsFor({ kind: "url-create", title: "Create Quicklink" })
+        var candidate = backend.decorated(rowId)
         if (!candidate) {
           var fallback = RootSearch.FALLBACKS.filter(function(f) { return f.id === data.id })[0]
           if (!fallback) throw new Error("Unknown command " + (data && data.id))
@@ -327,6 +485,8 @@ Item {
         return RootSearch.actionsFor(candidate)
       },
       performAction: function(data) {
+        var rowId = String(data && data.id || "")
+        if (rowId === "url:open" || rowId === "url:create") return backend.urlAction(rowId, String(data && data.query || ""))
         // Fallbacks are rows, not stored candidates.
         var fallback = RootSearch.FALLBACKS.filter(function(f) { return f.id === (data && data.id) })[0]
         if (fallback) {
@@ -336,6 +496,61 @@ Item {
         return backend.performAction(data)
       },
       getSearchHistory: function() { return frecencyStore.loaded ? frecencyStore.doc.searchHistory : [] }
+    })
+
+    Rpc.register(backend.registry, "quicklinks", {
+      list: function() { return quicklinksStore.loaded ? Quicklinks.list(quicklinksStore.doc) : [] },
+      getQuicklink: function(data) {
+        var item = backend.quicklinkById(String(data && data.id || ""))
+        if (!item) throw new Error("Quicklink not found")
+        return item
+      },
+      save: function(data) {
+        if (!quicklinksStore.loaded) throw new Error("quicklinks not loaded")
+        if (quicklinksStore.readOnly) throw new Error("quicklinks are read-only")
+        var result = Quicklinks.save(quicklinksStore.doc, data || {}, { now: Date.now() })
+        if (result.error) throw new Error(result.error)
+        quicklinksStore.update(function() { return result.doc })
+        backend.emit("quicklinks.updated", { id: result.item.id })
+        return result.item
+      },
+      update: function(data) {
+        if (!quicklinksStore.loaded) throw new Error("quicklinks not loaded")
+        if (quicklinksStore.readOnly) throw new Error("quicklinks are read-only")
+        var result = Quicklinks.update(quicklinksStore.doc, data || {}, { now: Date.now() })
+        if (result.error) throw new Error(result.error)
+        quicklinksStore.update(function() { return result.doc })
+        backend.emit("quicklinks.updated", { id: result.item.id })
+        return result.item
+      },
+      "delete": function(data) {
+        if (!quicklinksStore.loaded) throw new Error("quicklinks not loaded")
+        if (quicklinksStore.readOnly) throw new Error("quicklinks are read-only")
+        var id = String(data && data.id || "")
+        var result = Quicklinks.remove(quicklinksStore.doc, id)
+        if (result.error) throw new Error(result.error)
+        quicklinksStore.update(function() { return result.doc })
+        backend.emit("quicklinks.updated", { id: id })
+        return null
+      },
+      "import": function(data) { return backend.importQuicklinksText(data && data.text) },
+      "export": function() {
+        var outcome = backend.exportQuicklinks()
+        if (outcome.toast && outcome.toast.style === "failure") throw new Error(outcome.toast.title)
+        return { path: backend.paths.db + "/quicklinks-export.json" }
+      },
+      open: function(data) {
+        var id = String(data && (data.id || data.quicklinkId) || "")
+        var candidate = backend.candidatesById["quicklink:" + id]
+        if (!candidate) {
+          var item = backend.quicklinkById(id)
+          if (!item) throw new Error("Quicklink not found")
+          candidate = Quicklinks.toCandidate(item)
+        }
+        var supplied = data && (data.values || data.arguments)
+        var hasArgs = !!supplied
+        return backend.openQuicklink(candidate, hasArgs ? supplied : null, hasArgs)
+      }
     })
 
     Rpc.register(backend.registry, "frecency", {
@@ -367,9 +582,12 @@ Item {
   }
 
   // Guards and providers describe live system state: refresh them each open.
-  Component.onDestruction: { settingsStore.flush(); frecencyStore.flush() }
+  Component.onDestruction: { settingsStore.flush(); frecencyStore.flush(); quicklinksStore.flush() }
   onNotification: function(method, data) {
-    if (method === "window.visibilityChanged" && data && data.visible) menuSource.refresh()
+    if (method === "window.visibilityChanged" && data && data.visible) {
+      menuSource.refresh()
+      backend.refreshClipboard()
+    }
   }
 
   // ------------------------------------------------------------ persistence
@@ -406,10 +624,43 @@ Item {
   }
 
   // Bumped whenever ranking inputs change, so views re-query.
-  readonly property int dataRevision: candidatesRevision + (settingsStore.loaded ? 1 : 0) + (frecencyStore.loaded ? 1 : 0)
+  readonly property int dataRevision: candidatesRevision + (settingsStore.loaded ? 1 : 0) + (frecencyStore.loaded ? 1 : 0) + (quicklinksStore.loaded ? 1 : 0)
   property int storeRevision: 0
   Connections { target: settingsStore; function onChanged() { backend.storeRevision++ } }
   Connections { target: frecencyStore; function onChanged() { backend.storeRevision++ } }
+  Connections { target: quicklinksStore; function onChanged() { backend.storeRevision++; rebuildTimer.restart() } }
+
+  JsonStore {
+    id: quicklinksStore
+    ready: backend.directoriesReady
+    path: backend.paths.db + "/" + Schema.documents.quicklinks.file
+    migrations: Schema.documents.quicklinks.migrations
+    onMessage: function(level, text, metadata) { backend.log(level, "store", text, metadata) }
+  }
+
+  FileView {
+    id: exportFile
+    printErrors: false
+    atomicWrites: true
+    blockWrites: true
+  }
+
+  FileView {
+    id: importFile
+    printErrors: false
+    blockAllReads: true
+    property string readError: ""
+    onLoaded: importFile.readError = ""
+    onLoadFailed: function(error) { importFile.readError = FileViewError.toString(error) }
+  }
+
+  Process {
+    id: pasteProc
+    command: ["wl-paste", "-n"]
+    stdout: StdioCollector {
+      onStreamFinished: backend.clipboardText = text
+    }
+  }
 
   // config.json is optional and hand-edited; it hot-reloads on save.
   FileView {

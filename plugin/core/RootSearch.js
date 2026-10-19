@@ -20,6 +20,38 @@ var BUILTINS = [
     keywords: ["menu", "omarchy"],
     run: { summon: "omarchy.menu", payload: "{\"menu\":\"root\"}" },
     rootSearch: { when: "always" }
+  },
+  {
+    id: "builtin:create-quicklink",
+    title: "Create Quicklink",
+    subtitle: "Save a link with placeholders",
+    keywords: ["quicklink", "url", "link"],
+    run: { quicklink: "create" },
+    rootSearch: { when: "always" }
+  },
+  {
+    id: "builtin:search-quicklinks",
+    title: "Search Quicklinks",
+    subtitle: "Open a saved link",
+    keywords: ["quicklink", "url", "link"],
+    run: { quicklink: "search" },
+    rootSearch: { when: "always" }
+  },
+  {
+    id: "builtin:import-quicklinks",
+    title: "Import Quicklinks",
+    subtitle: "Paste a JSON array or a file path",
+    keywords: ["quicklink", "import", "json"],
+    run: { quicklink: "import" },
+    rootSearch: { when: "always" }
+  },
+  {
+    id: "builtin:export-quicklinks",
+    title: "Export Quicklinks",
+    subtitle: "Save the library as JSON",
+    keywords: ["quicklink", "export", "json"],
+    run: { quicklink: "export" },
+    rootSearch: { when: "always" }
   }
 ]
 
@@ -166,6 +198,7 @@ function rootSections(candidates, query, ctx, deps) {
     var searchable = decorated.filter(function(c) { return c.rootSearch.when !== "empty" })
     var results = deps.Ranker.rank(searchable, q, opts)
     var sections = []
+    if (isUrlQuery(q)) sections.push(urlSection(q))
     if (results.length > 0) sections.push({ id: "results", title: "Results", rows: results })
     sections.push({ id: "fallback-commands", title: "Use “" + q + "” with…", rows: fallbackRows(q) })
     return sections
@@ -212,6 +245,62 @@ function submenuSections(candidates, menuId, query, ctx, deps) {
   return ranked.length ? [{ id: "results", title: "Results", rows: ranked }] : []
 }
 
+// A query with no spaces that is a scheme URL or a www host (SPEC §7.5).
+function isUrlQuery(query) {
+  var q = String(query || "").trim()
+  if (!q || /\s/.test(q)) return false
+  if (/^www\./i.test(q)) return true
+  return /^[a-z][a-z0-9+.-]*:[^\s]*$/i.test(q)
+}
+
+function normalizedUrl(query) {
+  var q = String(query || "").trim()
+  if (/^www\./i.test(q)) return "https://" + q
+  return q
+}
+
+// URL rows are not stored candidates. Open and Create read the live query.
+function urlSection(query) {
+  var q = String(query || "").trim()
+  var url = normalizedUrl(q)
+  return {
+    id: "url",
+    title: "",
+    rows: [
+      {
+        candidate: {
+          id: "url:open", type: "command", kind: "url-open", title: "Open in Browser", subtitle: url,
+          url: url, link: url, typeLabel: "URL", glyph: "", rootSearch: { when: "searching" }
+        },
+        record: null
+      },
+      {
+        candidate: {
+          id: "url:create", type: "command", kind: "url-create", title: "Create Quicklink", subtitle: q,
+          url: url, link: url, typeLabel: "Quicklink", glyph: "", rootSearch: { when: "searching" }
+        },
+        record: null
+      }
+    ]
+  }
+}
+
+// Search Quicklinks. An empty query keeps library order.
+function quicklinkSections(candidates, query, ctx, deps) {
+  var q = String(query || "").trim()
+  var items = []
+  for (var i = 0; i < candidates.length; i++) {
+    if (candidates[i].kind !== "quicklink" || !isEnabled(candidates[i], ctx)) continue
+    items.push(decorate(candidates[i], ctx, deps))
+  }
+  if (!q) {
+    if (!items.length) return []
+    return [{ id: "quicklinks", title: "Quicklinks", rows: items.map(function(c) { return { candidate: c, record: null } }) }]
+  }
+  var ranked = deps.Ranker.rank(items, q, rankOptions(ctx))
+  return ranked.length ? [{ id: "results", title: "Results", rows: ranked }] : []
+}
+
 // Actions for a row (SPEC §10.2 action panel, §10.3 shortcuts). The first is
 // primary (↵), the second secondary (Ctrl ↵).
 function actionsFor(candidate) {
@@ -223,6 +312,9 @@ function actionsFor(candidate) {
     case "omarchy-menu":
     case "omarchy-link": primary = { id: "open", title: "Open Menu", icon: "" }; break
     case "fallback": primary = { id: "open", title: candidate.title, icon: "" }; break
+    case "quicklink": primary = { id: "open", title: "Open Quicklink", icon: "" }; break
+    case "url-open": primary = { id: "open", title: "Open in Browser", icon: "" }; break
+    case "url-create": primary = { id: "open", title: "Create Quicklink", icon: "" }; break
     default: primary = { id: "open", title: "Open Command", icon: "" }
   }
   primary.shortcut = "↵"
@@ -231,7 +323,12 @@ function actionsFor(candidate) {
 
   if (candidate.kind && candidate.kind.indexOf("omarchy-") === 0)
     list.push({ id: "open-in-omarchy-menu", title: "Open in Omarchy Menu", shortcut: "Ctrl ↵", section: "primary", icon: "" })
-  if (candidate.kind === "fallback") return list
+  if (candidate.kind === "fallback" || candidate.kind === "url-open" || candidate.kind === "url-create") return list
+  if (candidate.kind === "quicklink") {
+    list.push({ id: "edit-quicklink", title: "Edit Quicklink", shortcut: "Ctrl ↵", section: "primary", icon: "" })
+    list.push({ id: "copy-link", title: "Copy Link", shortcut: "Ctrl Shift C", section: "copy", icon: "" })
+    list.push({ id: "delete-quicklink", title: "Delete Quicklink", shortcut: "Ctrl X", section: "delete", icon: "" })
+  }
 
   if (candidate.kind === "app") list.push({ id: "copy-id", title: "Copy Desktop ID", shortcut: "Ctrl Shift C", section: "copy", icon: "" })
   if (candidate.kind === "omarchy-action") list.push({ id: "copy-command", title: "Copy Command", shortcut: "Ctrl Shift C", section: "copy", icon: "" })
@@ -283,6 +380,9 @@ if (typeof module !== "undefined") {
     decorate: decorate,
     rootSections: rootSections,
     submenuSections: submenuSections,
+    quicklinkSections: quicklinkSections,
+    isUrlQuery: isUrlQuery,
+    normalizedUrl: normalizedUrl,
     actionsFor: actionsFor,
     reorderFavorites: reorderFavorites,
     fallbackUrl: fallbackUrl
