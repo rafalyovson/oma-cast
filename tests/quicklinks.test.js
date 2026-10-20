@@ -733,6 +733,91 @@ test("a URL query includes a bare host, an IP, localhost port, mailto, and tel",
   assert.equal(mail[0].rows[0].candidate.subtitle, "mailto:a@b.c")
 })
 
+test("renaming a quicklink onto an existing name is rejected", () => {
+  const doc = QL.createDocument()
+  const a = QL.save(doc, { name: "A", link: "https://a.test" }, { now: 1, id: "ql-a" })
+  const b = QL.save(a.doc, { name: "B", link: "https://b.test" }, { now: 2, id: "ql-b" })
+  const renamed = QL.update(b.doc, { id: "ql-b", name: "A" }, { now: 3 })
+  assert.match(renamed.error, /already/i)
+  assert.equal(QL.get(renamed.doc, "ql-b").name, "B")
+  assert.match(QL.update(b.doc, { id: "ql-b", name: "a" }, { now: 3 }).error, /already/i)
+  const self = QL.update(b.doc, { id: "ql-a", name: "a" }, { now: 4 })
+  assert.equal(self.error, "")
+  assert.equal(self.item.name, "a")
+  const imported = QL.importText(b.doc, JSON.stringify([{ name: "a", link: "https://other.test" }]), { now: 5 })
+  assert.equal(imported.added, 0)
+  assert.deepEqual(imported.skippedNames, ["a"])
+})
+
+test("a file path keeps its spaces and quotes", () => {
+  assert.equal(QL.expand("~/My Notes/a.pdf", {}).url, "~/My Notes/a.pdf")
+  assert.equal(QL.expand("~/Bob's.txt", {}).url, "~/Bob's.txt")
+  assert.equal(QL.expand("/srv/My Notes/a.pdf", {}).url, "/srv/My Notes/a.pdf")
+  const expanded = QL.expand("~/My Notes/a.pdf", {})
+  assert.deepEqual(
+    QL.openArgv("org.gnome.Evince.desktop", expanded.url, "/home/rafa"),
+    ["uwsm-app", "--", "gtk-launch", "--", "org.gnome.Evince.desktop", "/home/rafa/My Notes/a.pdf"]
+  )
+})
+
+test("Quicklinks and RootSearch share one bare-host table", () => {
+  const rows = [
+    ["test.am", "https://test.am", true],
+    ["münchen.de", "https://münchen.de", true],
+    ["1.2.3.4", "https://1.2.3.4", true],
+    ["8.8.8.8:443/x", "https://8.8.8.8:443/x", true],
+    ["localhost:3000", "http://localhost:3000", true],
+    ["[::1]:8080", "http://[::1]:8080", true],
+    ["[::1]", "http://[::1]", true],
+    ["[2001:db8::1]", "https://[2001:db8::1]", true],
+    ["package.json", "", false],
+    ["notes.md", "", false],
+    ["next.js", "", false],
+    ["localhost:0", "", false],
+    ["example.com:0", "", false],
+    ["ex\u200bample.com", "", false],
+    ["exam\u202Eple.com", "", false],
+    ["notes", "", false],
+    ["word:value", "", false]
+  ]
+  for (const [input, bare, isUrl] of rows) {
+    assert.equal(QL.bareWebUrl(input), bare, input)
+    assert.equal(RS.bareWebUrl(input), bare, input)
+    assert.equal(RS.isUrlQuery(input), isUrl, input)
+    if (bare) assert.equal(RS.normalizedUrl(input), bare, input)
+  }
+  assert.equal(QL.bareWebUrl("mailto:a@b.c"), "")
+  assert.equal(RS.bareWebUrl("mailto:a@b.c"), "")
+  assert.equal(RS.isUrlQuery("mailto:a@b.c"), true)
+  assert.deepEqual(QL.openArgv("", "package.json"), ["xdg-open", "package.json"])
+  assert.deepEqual(QL.openArgv("", "[::1]:8080"), ["omarchy-launch-browser", "http://[::1]:8080"])
+})
+
+test("deleting a quicklink drops its frecency entry", () => {
+  const items = { "quicklink:ql-1": { anchor: 1 }, "app:firefox": { anchor: 2 } }
+  const next = QL.clearQuicklinkFrecency(items, "ql-1")
+  assert.equal(next["quicklink:ql-1"], undefined)
+  assert.deepEqual(next["app:firefox"], { anchor: 2 })
+  assert.equal(items["quicklink:ql-1"].anchor, 1)
+  const fs = require("node:fs")
+  const path = require("node:path")
+  const backend = fs.readFileSync(path.join(__dirname, "../plugin/Backend.qml"), "utf8")
+  assert.match(backend, /Quicklinks\.clearQuicklinkFrecency/)
+})
+
+test("push, pop, and pop-to-root clear the Open With dismissal", () => {
+  const fs = require("node:fs")
+  const path = require("node:path")
+  const qml = fs.readFileSync(path.join(__dirname, "../plugin/ui/LauncherWindow.qml"), "utf8")
+  for (const name of ["popToRoot", "push", "pop"]) {
+    const start = qml.indexOf("function " + name + "(")
+    assert.ok(start >= 0, name)
+    const next = qml.indexOf("\n  function ", start + 10)
+    const body = qml.slice(start, next === -1 ? qml.length : next)
+    assert.match(body, /openWithListDismissed = false/, name)
+  }
+})
+
 test("import names each skipped row in the toast", () => {
   const fs = require("node:fs")
   const path = require("node:path")
