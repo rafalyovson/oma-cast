@@ -841,13 +841,34 @@ function expandHome(url, home) {
   return text
 }
 
+// A dotted host with no scheme, such as test.am or www.example.com/a.
+// Paths (~/, /, ./) and anything that already has a scheme stay as written.
+function httpsForBareHost(target) {
+  var text = String(target || "")
+  if (!text || /\s/.test(text)) return ""
+  var first = text.charAt(0)
+  if (first === "/" || first === "~" || first === "." || first === "-") return ""
+  if (text.indexOf("://") >= 0) return ""
+  // A colon before the first dot is a scheme (mailto:). host:port keeps the colon after the dot.
+  var dot = text.indexOf(".")
+  var colon = text.indexOf(":")
+  if (colon >= 0 && (dot < 0 || colon < dot)) return ""
+  if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+(?::\d+)?(?:[/?#]\S*)?$/i.test(text)) return ""
+  return "https://" + text
+}
+
 function openArgv(openWith, url, home) {
   var target = expandHome(url, home).trim()
   // Omarchy's xdg-open is a script that rejects "--" ("unexpected option '--'").
   // A target that starts with "-" would be read as an option, so it is refused.
   if (!target || target.charAt(0) === "-") return null
+  var bare = httpsForBareHost(target)
+  if (bare) target = bare
   var app = String(openWith || "").trim()
-  if (!app) return ["xdg-open", target]
+  if (!app) {
+    if (bare) return ["omarchy-launch-browser", target]
+    return ["xdg-open", target]
+  }
   if (!isDesktopId(app)) return null
   return ["uwsm-app", "--", "gtk-launch", "--", app, target]
 }
