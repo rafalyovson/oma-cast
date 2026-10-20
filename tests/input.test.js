@@ -21,11 +21,16 @@ test("printable text, cursor motion, and a non-empty backspace belong to the fie
   assert.equal(InputKeys.owner(event(Key.A, Mod.Control), "hi", {}), "field")
   assert.equal(InputKeys.owner(event(Key.Backspace), "hi", {}), "field")
   assert.equal(InputKeys.owner(event(Key.Backspace, Mod.Control), "hi", {}), "field")
+  assert.equal(InputKeys.owner(event(Key.Insert, Mod.Control), "hi", {}), "field")
+  assert.equal(InputKeys.owner(event(Key.Insert, Mod.Shift), "hi", {}), "field")
+  assert.equal(InputKeys.owner(event(Key.Delete, Mod.Shift), "hi", {}), "field")
+  assert.equal(InputKeys.owner(event(Key.C, Mod.Control | Mod.Shift), "hi", { selected: true }), "copy")
 })
 
 test("paste, clear, an empty backspace, and navigation stay with the launcher", () => {
   assert.equal(InputKeys.owner(event(Key.V, Mod.Control), "hi", {}), "paste")
-  assert.equal(InputKeys.owner(event(Key.Insert, Mod.Shift), "", {}), "paste")
+  assert.equal(InputKeys.owner(event(Key.V, Mod.Control | Mod.Shift), "hi", {}), "paste")
+  assert.equal(InputKeys.owner(event(Key.Paste), "hi", {}), "paste")
   assert.equal(InputKeys.owner(event(Key.U, Mod.Control), "hi", {}), "clear")
   assert.equal(InputKeys.owner(event(Key.U, Mod.Control), "", {}), "launcher")
   assert.equal(InputKeys.owner(event(Key.Backspace), "", {}), "backspace-empty")
@@ -34,6 +39,7 @@ test("paste, clear, an empty backspace, and navigation stay with the launcher", 
   assert.equal(InputKeys.owner(event(Key.Escape), "hi", {}), "launcher")
   assert.equal(InputKeys.owner(event(Key.Space, 0, " "), "go", { blockSpace: true }), "launcher")
   assert.equal(InputKeys.owner(event(Key.Space, 0, " "), "go", {}), "field")
+  assert.equal(InputKeys.owner(event(Key.C, Mod.Control | Mod.Shift), "hi", {}), "launcher")
 })
 
 test("a Qt clipboard string is inserted, and an empty one asks for wl-paste", () => {
@@ -50,6 +56,8 @@ test("paste replaces the selection and keeps a single line", () => {
   assert.equal(InputKeys.shapePaste("hello\n", false), "hello")
   assert.equal(InputKeys.shapePaste("hello \n", false), "hello ")
   assert.equal(InputKeys.shapePaste("a\r\nb\r\n", false), "a b")
+  assert.equal(InputKeys.shapePaste("\nhello", false), "hello")
+  assert.equal(InputKeys.shapePaste("\na\nb\n", false), "a b")
   assert.equal(InputKeys.shapePaste("a b\n", true), "ab")
 })
 
@@ -65,6 +73,9 @@ test("unhandled Ctrl, Alt, and Meta chords are swallowed, and undo copy cut pass
   assert.equal(InputKeys.swallowModifier(event(Key.Z, Mod.Control | Mod.Shift)), false)
   assert.equal(InputKeys.swallowModifier(event(Key.Z, Mod.Control | Mod.Alt)), true)
   assert.equal(InputKeys.swallowModifier(event(Key.A, 0, "a")), false)
+  assert.equal(InputKeys.swallowModifier(event(Key.Insert, Mod.Control)), false)
+  assert.equal(InputKeys.swallowModifier(event(Key.Insert, Mod.Shift)), false)
+  assert.equal(InputKeys.swallowModifier(event(Key.Delete, Mod.Shift)), false)
 })
 
 test("show and hide do not read the clipboard, and each typing surface is a TextInput", () => {
@@ -88,6 +99,9 @@ test("show and hide do not read the clipboard, and each typing surface is a Text
   assert.match(panel, /Search for actions/)
   assert.match(launcher, /onStreamFinished:/)
   assert.doesNotMatch(launcher, /fieldPaste\.prior/)
+  assert.doesNotMatch(launcher.slice(launcher.indexOf("id: fieldPaste")), /onExited/)
+  assert.match(launcher, /owned === "copy"/)
+  assert.match(launcher, /\.copy\(\)/)
   assert.match(launcher, /swallowModifier\(event\)/)
   const pasteFn = launcher.slice(launcher.indexOf("function pasteInto("), launcher.indexOf("function recallHistory"))
   assert.match(pasteFn, /startFieldPaste\(field, true\)/)
@@ -106,9 +120,28 @@ function qmllintBin() {
 
 const qmllint = qmllintBin()
 
+function placeholderHits(output) {
+  // Qt 6.4: `no property "placeholderText"`. Qt 6.12: `Could not find property "placeholderText"`.
+  return output.split("\n").filter((line) => /(?:Could not find property|no property) ["']placeholderText/.test(line))
+}
+
+test("the placeholder check matches Qt 6.12 and Qt 6.4 warnings, including LauncherWindow.qml", () => {
+  const apollo = [
+    'Warning: LauncherWindow.qml:576:9: Could not find property "placeholderText".',
+    'Warning: LauncherWindow.qml:577:9: Could not find property "placeholderTextColor".',
+    'Warning: ActionPanel.qml:172:7: Could not find property "placeholderText".'
+  ].join("\n")
+  const qt64 = 'Binding assigned to "placeholderText", but no property "placeholderText" exists in the current element.'
+  assert.deepEqual(placeholderHits(apollo).length, 3)
+  assert.deepEqual(placeholderHits(qt64).length, 1)
+  assert.deepEqual(placeholderHits('Could not find property "text".'), [])
+})
+
 test("qmllint finds no placeholder properties on the text fields", { skip: !qmllint }, () => {
-  const files = ["LauncherWindow.qml", "ActionPanel.qml"].map((name) => path.join(__dirname, "../plugin/ui", name))
-  const run = spawnSync(qmllint, files, { encoding: "utf8" })
-  const hits = `${run.stdout || ""}\n${run.stderr || ""}`.split("\n").filter((line) => /no property "placeholderText/.test(line))
-  assert.deepEqual(hits, [])
+  for (const name of ["LauncherWindow.qml", "ActionPanel.qml"]) {
+    const file = path.join(__dirname, "../plugin/ui", name)
+    const run = spawnSync(qmllint, [file], { encoding: "utf8" })
+    const out = `${run.stdout || ""}\n${run.stderr || ""}`
+    assert.deepEqual(placeholderHits(out), [], name)
+  }
 })

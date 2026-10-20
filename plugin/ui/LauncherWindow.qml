@@ -435,10 +435,13 @@ OverlayWindow {
       if (enter) { actionPanel.activateSelected(); return true }
     }
 
+    var typing = window.activeField()
     var owned = InputKeys.owner(event, window.actionPanelOpen ? actionPanel.filter : window.query, {
-      blockSpace: !window.actionPanelOpen && window.view.kind === "alias"
+      blockSpace: !window.actionPanelOpen && window.view.kind === "alias",
+      selected: !!(typing && typing.selectionStart !== typing.selectionEnd)
     })
     if (owned === "paste") { window.pasteInto(false); return true }
+    if (owned === "copy") { if (typing) typing.copy(); return true }
     if (owned === "clear") { window.clearActiveText(); return true }
     if (owned === "field") return false
     // Undo, redo, copy, and cut belong to the field in every view, including
@@ -846,6 +849,5 @@ OverlayWindow {
         if (field) window.insertInto(field, fieldPasteOut.text)
       }
     }
-    onExited: function() { fieldPaste.target = null }
   }
 }

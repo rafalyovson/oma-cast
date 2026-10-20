@@ -10,6 +10,7 @@ var Key = {
   Escape: 0x01000000,
   Backspace: 0x01000003,
   Insert: 0x01000006,
+  Delete: 0x01000007,
   Home: 0x01000010,
   End: 0x01000011,
   Left: 0x01000012,
@@ -24,7 +25,8 @@ var Key = {
   V: 0x56,
   X: 0x58,
   Y: 0x59,
-  Z: 0x5a
+  Z: 0x5a,
+  Paste: 0x010000e2
 }
 
 function flagged(mods, flag) {
@@ -45,9 +47,11 @@ function isPlainText(event) {
 }
 
 // "field" lets the TextInput edit. "paste" stays here so an empty Qt
-// clipboard can fall through to wl-paste. "clear" is Ctrl+U, which wipes
-// the whole field. Qt binds Ctrl+K to delete-to-end, so a Ctrl+K the
-// launcher does not use has to be swallowed before it reaches the field.
+// clipboard can fall through to wl-paste. Ctrl+Shift+V is paste too:
+// Omarchy's Super+V sends that chord. "copy" is Ctrl+Shift+C while a
+// selection exists. "clear" is Ctrl+U, which wipes the whole field.
+// Qt binds Ctrl+K to delete-to-end, so a Ctrl+K the launcher does not
+// use has to be swallowed before it reaches the field.
 function owner(event, text, opts) {
   var key = event.key
   var mods = event.modifiers || 0
@@ -57,9 +61,14 @@ function owner(event, text, opts) {
   var meta = flagged(mods, Meta)
   var value = String(text || "")
   var blockSpace = !!(opts && opts.blockSpace)
+  var selected = !!(opts && opts.selected)
 
-  if (!alt && !meta && ctrl && !shift && key === Key.V) return "paste"
-  if (!alt && !meta && !ctrl && shift && key === Key.Insert) return "paste"
+  if (!alt && !meta && ctrl && key === Key.V) return "paste"
+  if (!alt && !meta && key === Key.Paste) return "paste"
+  if (!alt && !meta && ctrl && shift && key === Key.C && selected) return "copy"
+  if (!alt && !meta && ctrl && !shift && key === Key.Insert) return "field"
+  if (!alt && !meta && !ctrl && shift && key === Key.Insert) return "field"
+  if (!alt && !meta && !ctrl && shift && key === Key.Delete) return "field"
   if (!alt && !meta && ctrl && !shift && key === Key.U) return value ? "clear" : "launcher"
   if (key === Key.Backspace && !alt && !meta) {
     if (!value && !ctrl) return "backspace-empty"
@@ -92,9 +101,9 @@ function applyPaste(text, start, end, incoming) {
   return { text: value.slice(0, a) + chunk + value.slice(b), cursor: a + chunk.length }
 }
 
-// Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y, Ctrl+C, and Ctrl+X are the field's own
-// undo, redo, copy, and cut. Every other Ctrl, Alt, or Meta chord is a
-// launcher shortcut or nothing, and must not type into the field.
+// Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y, Ctrl+C, Ctrl+X, and Ctrl+Insert are the
+// field's own undo, redo, copy, and cut. Every other Ctrl, Alt, or Meta
+// chord is a launcher shortcut or nothing, and must not type into the field.
 function swallowModifier(event) {
   var mods = event.modifiers || 0
   var ctrl = flagged(mods, Control)
@@ -105,13 +114,13 @@ function swallowModifier(event) {
   var shift = flagged(mods, Shift)
   var key = event.key
   if (shift) return key !== Key.Z
-  return key !== Key.Z && key !== Key.Y && key !== Key.C && key !== Key.X
+  return key !== Key.Z && key !== Key.Y && key !== Key.C && key !== Key.X && key !== Key.Insert
 }
 
 function shapePaste(text, blockSpace) {
   var value = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n")
   if (blockSpace) return value.replace(/\s+/g, "")
-  return value.replace(/\n+$/g, "").replace(/\n+/g, " ")
+  return value.replace(/^\n+|\n+$/g, "").replace(/\n+/g, " ")
 }
 
 if (typeof module !== "undefined") {

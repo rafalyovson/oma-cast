@@ -113,7 +113,7 @@ Works:
 - **Providers:** apps from `shell.appLibrary`, the whole Omarchy menu (about 400 items, with breadcrumbs, guards, ✓ state and font/power-profile provider rows), and the built-in "Omarchy Menu".
 - **Ranking state:** frecency (+100 per launch, 10-day half-life) and learned search terms in `db/frecency.json`. Aliases (exact → top; duplicates rejected), favourites (Ctrl+Shift+F, reorder Ctrl+Alt+↑↓) and disabled commands live in `db/settings.json` `commands`.
 - **Navigation:** pushed Omarchy submenus (search within them), the alias editor, back with Esc / Ctrl+[ / Backspace on an empty query / the header arrow, and Shift+Esc to pop to root.
-- **Keyboard:** the header and the action-panel filter are `TextInput`s. Ctrl+V and Shift+Insert paste. Middle-click pastes the primary selection. Left, Right, Home, End, and Ctrl+A stay in the field. Ctrl+K action panel (filterable, per-row shortcuts), ↵ / Ctrl+↵ / Ctrl+Shift+↵ for the first three actions, Ctrl+1–9, Ctrl+↑↓ to jump sections, PageUp/PageDown, Ctrl+N/P (emacs), ↑ on an empty root for search history, Ctrl+Shift+C copy, Alt+Shift+D disable, Ctrl + / − / 0 zoom.
+- **Keyboard:** the header and the action-panel filter are `TextInput`s. Ctrl+V and Ctrl+Shift+V paste (Omarchy Super+V sends the second). Middle-click and the Paste key paste through the same shaper. Shift+Insert, Shift+Delete, and Ctrl+Insert stay in the field. Left, Right, Home, End, and Ctrl+A stay in the field. Ctrl+K action panel (filterable, per-row shortcuts), ↵ / Ctrl+↵ / Ctrl+Shift+↵ for the first three actions, Ctrl+1–9, Ctrl+↑↓ to jump sections, PageUp/PageDown, Ctrl+N/P (emacs), ↑ on an empty root for search history, Ctrl+Shift+C copies the selection when there is one and otherwise the command, Alt+Shift+D disable, Ctrl + / − / 0 zoom.
 - **Feedback:** toasts in the footer, a HUD through Omarchy's OSD when the window closes, and a 2 px loading bar while guards and providers refresh (on every open, about 250 ms in the background).
 - **Window behaviour:**
   - The `escapeKeyBehavior` setting works both ways.
@@ -122,7 +122,7 @@ Works:
   - A launch from root clears the query [I].
   - A row is selected on hover only after a real pointer move (Omarchy's PointerMoveGate).
 - **Latency:** show → mapped in 37–44 ms, hide in 9–25 ms (`tests/smoke.sh`).
-- **Tests:** 71 passing unit tests, 1 skipped (`TZ=UTC node --test tests/*.test.js`). The skip is the installed Omarchy menu parse, which needs the live shell.
+- **Tests:** 72 passing unit tests, 1 skipped (`TZ=UTC node --test tests/*.test.js`). The skip is the installed Omarchy menu parse, which needs the live shell.
 
 Stubbed / not yet:
 - Keys that arrive before OverlayWindow grants Exclusive focus still go to the window underneath. The text field is focused on show, so keys that reach the surface are not dropped.
