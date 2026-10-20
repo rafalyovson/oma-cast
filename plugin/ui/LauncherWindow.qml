@@ -51,6 +51,10 @@ OverlayWindow {
   property var actions: []
   property var toast: null
   property int historyIndex: -1
+  // Last search the list was built from. An open with the same view, query,
+  // and ranking inputs keeps the rows. Frecency is recomputed on search, so
+  // the key also changes every 10 minutes. [D]
+  property string listKey: ""
 
   readonly property bool atRoot: window.stack.length === 1
   readonly property bool compact: window.general.windowMode === "compact" && window.atRoot && !window.query
@@ -150,11 +154,33 @@ OverlayWindow {
 
   // ---------------------------------------------------------------- rows
 
+  function listSignature() {
+    var view = window.view || ({})
+    return [
+      view.kind || "",
+      view.menuId || "",
+      window.query,
+      window.backend.candidatesRevision,
+      window.backend.dataRevision,
+      window.backend.storeRevision,
+      Math.floor(Date.now() / 600000)
+    ].join("\u0001")
+  }
+
   function rebuild(resetSelection) {
     pointerGate.reset()
+    var key = window.listSignature()
+    if (key === window.listKey) {
+      if (resetSelection) window.select(window.editor ? -1 : window.nextSelectable(-1, 1))
+      return
+    }
     var keepId = !resetSelection && window.selectedRow ? window.selectedRow.itemId : ""
     rows.clear()
-    if (window.editor) { window.select(-1); return }
+    if (window.editor) {
+      window.listKey = key
+      window.select(-1)
+      return
+    }
     var result = window.backend.callSync("rootSearch.search", { query: window.query, view: window.view })
     if (!result.ok) {
       window.showToast("failure", result.error)
@@ -171,6 +197,7 @@ OverlayWindow {
         rows.append(window.rowData(c, "item"))
       }
     }
+    window.listKey = key
     window.select(keepIndex >= 0 ? keepIndex : window.nextSelectable(-1, 1))
   }
 
@@ -457,7 +484,7 @@ OverlayWindow {
 
     if (window.editor) {
       if (window.view.kind === "confirm-delete-quicklink") {
-        if (enter) window.confirmDelete()
+        if (enter && !event.isAutoRepeat) window.confirmDelete()
         return true
       }
       if (window.formActive) {

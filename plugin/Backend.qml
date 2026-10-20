@@ -31,8 +31,6 @@ Item {
   property var config: Schema.withConfigDefaults(null)
   property bool directoriesReady: false
   readonly property bool ready: directoriesReady && settingsStore.loaded && frecencyStore.loaded
-  // Text from the last {clipboard} read. [D] No clipboard history, so offset > 0 stays empty.
-  property string clipboardText: ""
   property var pendingQuicklink: null
 
   readonly property var registry: Rpc.createRegistry()
@@ -238,9 +236,21 @@ Item {
       uuid: Quicklinks.randomUuid()
     })
     if (!expanded.ok) return { toast: { style: "failure", title: expanded.error || "Could not expand link" } }
-    backend.clipboardText = clipboard || ""
-    Util.execArgv(Quicklinks.openArgv(openWith, expanded.url, backend.paths.home))
+    var argv = Quicklinks.openArgv(openWith, expanded.url, backend.paths.home)
+    if (!argv) {
+      var target = String(expanded.url || "").trim()
+      var title = !target || target.charAt(0) === "-" ? "Link cannot start with -" : "Open with must be a desktop id"
+      return { toast: { style: "failure", title: title } }
+    }
+    Util.execArgv(argv)
     backend.recordVisit(candidate.id, "")
+    return { close: true }
+  }
+
+  function openBrowser(url) {
+    var argv = Quicklinks.browserArgv(url)
+    if (!argv) return { toast: { style: "failure", title: "Link cannot start with -" } }
+    Util.execArgv(argv)
     return { close: true }
   }
 
@@ -267,9 +277,24 @@ Item {
     exportFile.errorText = ""
     exportFile.path = path
     exportFile.setText(json)
+    // blockWrites makes FileView.saveSync emit saveFailed before setText
+    // returns when it records an error (Quickshell 0.3.2). An atomic commit
+    // failure does not set that error, and setText returns without writing
+    // when the text is unchanged, so the bytes on disk are checked too.
     if (exportFile.failed) return { toast: { style: "failure", title: "Could not write " + path + ": " + exportFile.errorText } }
-    Util.execArgv(["wl-copy", "--", json])
-    return { toast: { style: "success", title: "Wrote " + path + " and copied it to the clipboard" } }
+    var written = backend.readTextFile(path)
+    if (written.error || written.text !== json) {
+      var detail = written.error ? ": " + written.error : ""
+      return { toast: { style: "failure", title: "Could not write " + path + detail } }
+    }
+    // wl-copy takes the file on stdin. Passing the JSON as an argument
+    // fails once the library is over about 128 KiB, and the toast used to
+    // say the copy had worked.
+    copyProc.wrotePath = path
+    copyProc.sawExit = false
+    copyProc.command = ["sh", "-c", "wl-copy < \"$1\"", "wl-copy", path]
+    copyProc.running = true
+    return { wait: true }
   }
 
   function readTextFile(path) {
@@ -303,10 +328,7 @@ Item {
 
   function urlAction(id, query) {
     var url = RootSearch.normalizedUrl(query)
-    if (id === "url:open") {
-      Util.execArgv(Quicklinks.openArgv("", url, backend.paths.home))
-      return { close: true }
-    }
+    if (id === "url:open") return backend.openBrowser(url)
     return { push: backend.quicklinkForm("create", { link: url }) }
   }
 
@@ -347,8 +369,7 @@ Item {
         case "quicklink":
           return backend.openQuicklink(candidate, null, false)
         case "fallback":
-          Util.execArgv(Quicklinks.openArgv("", RootSearch.fallbackUrl(candidate, query)))
-          return { close: true }
+          return backend.openBrowser(RootSearch.fallbackUrl(candidate, query))
       }
       throw new Error("Cannot open " + id)
     }
@@ -508,10 +529,7 @@ Item {
         if (rowId === "url:open" || rowId === "url:create") return backend.urlAction(rowId, String(data && data.query || ""))
         // Fallbacks are rows, not stored candidates.
         var fallback = RootSearch.FALLBACKS.filter(function(f) { return f.id === (data && data.id) })[0]
-        if (fallback) {
-          Util.execArgv(Quicklinks.openArgv("", RootSearch.fallbackUrl(fallback, data.query)))
-          return { close: true }
-        }
+        if (fallback) return backend.openBrowser(RootSearch.fallbackUrl(fallback, data.query))
         return backend.performAction(data)
       },
       getSearchHistory: function() { return frecencyStore.loaded ? frecencyStore.doc.searchHistory : [] }
@@ -600,10 +618,20 @@ Item {
     function onValuesChanged() { rebuildTimer.restart() }
   }
 
-  // Guards and providers describe live system state: refresh them each open.
+  // Guards and providers describe live system state. Refreshing them starts
+  // a few hundred milliseconds of scripts, so wait until the layer has mapped.
+  // A toggle that hides again before then never starts them.
   Component.onDestruction: { settingsStore.flush(); frecencyStore.flush(); quicklinksStore.flush() }
   onNotification: function(method, data) {
-    if (method === "window.visibilityChanged" && data && data.visible) menuSource.refresh()
+    if (method !== "window.visibilityChanged") return
+    if (data && data.visible) menuRefreshTimer.restart()
+    else menuRefreshTimer.stop()
+  }
+
+  Timer {
+    id: menuRefreshTimer
+    interval: 500
+    onTriggered: menuSource.refresh()
   }
 
   // ------------------------------------------------------------ persistence
@@ -675,6 +703,28 @@ Item {
     property string readError: ""
     onLoaded: importFile.readError = ""
     onLoadFailed: function(error) { importFile.readError = FileViewError.toString(error) }
+  }
+
+  Process {
+    id: copyProc
+    property bool sawExit: false
+    property string wrotePath: ""
+    onExited: function(exitCode) {
+      copyProc.sawExit = true
+      var path = copyProc.wrotePath
+      if (exitCode === 0) backend.quicklinkReady({ toast: { style: "success", title: "Wrote " + path + " and copied it to the clipboard" } })
+      else backend.quicklinkReady({ toast: { style: "failure", title: "Wrote " + path + " but could not copy it to the clipboard" } })
+    }
+    // FailedToStart changes `running` and does not emit exited.
+    onRunningChanged: {
+      if (copyProc.running || copyProc.sawExit || !copyProc.wrotePath) return
+      Qt.callLater(function() {
+        if (copyProc.running || copyProc.sawExit || !copyProc.wrotePath) return
+        var path = copyProc.wrotePath
+        copyProc.wrotePath = ""
+        backend.quicklinkReady({ toast: { style: "failure", title: "Wrote " + path + " but could not copy it to the clipboard" } })
+      })
+    }
   }
 
   Process {

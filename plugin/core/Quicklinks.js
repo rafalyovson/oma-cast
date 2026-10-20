@@ -49,10 +49,13 @@ function buildItem(input, id, now) {
   var link = String(input && input.link != null ? input.link : "").trim()
   if (!name) return { error: "Quicklink needs a name" }
   if (!link) return { error: "Quicklink needs a link" }
+  if (link.charAt(0) === "-") return { error: "Quicklink link cannot start with -" }
   var parsed = parseLink(link)
   if (parsed.error) return { error: parsed.error }
   var iconName = String(input.iconName || "").trim()
   if (iconName.indexOf("://") >= 0) return { error: "Quicklink iconName cannot be a remote URL" }
+  var openWith = String(input.openWith || "").trim()
+  if (openWith && !isDesktopId(openWith)) return { error: "Quicklink openWith must be a desktop id" }
   return {
     error: "",
     item: {
@@ -60,11 +63,17 @@ function buildItem(input, id, now) {
       name: name,
       link: link,
       iconName: iconName,
-      openWith: String(input.openWith || "").trim(),
+      openWith: openWith,
       createdAt: now,
       updatedAt: now
     }
   }
+}
+
+// A desktop file id, such as firefox.desktop or org.gnome.Music.desktop.
+// Empty means the default opener. A leading dash would be an option to gtk-launch.
+function isDesktopId(app) {
+  return /^[A-Za-z0-9][A-Za-z0-9_.+-]*\.desktop$/.test(String(app || ""))
 }
 
 function save(doc, input, ctx) {
@@ -537,17 +546,25 @@ function dateText(kind, attrs, ctx) {
 
 function optionValue(placeholder, text) {
   var options = placeholder.options || []
-  for (var i = 0; i < options.length; i++) {
-    if (options[i] && options[i].title === text) return String(options[i].value)
+  if (!options.length) return { ok: true, text: text, error: "" }
+  var wanted = String(text).toLowerCase()
+  var i
+  for (i = 0; i < options.length; i++) {
+    var titled = options[i]
+    if (titled && String(titled.title).toLowerCase() === wanted) return { ok: true, text: String(titled.value), error: "" }
   }
-  return text
+  for (i = 0; i < options.length; i++) {
+    var valued = options[i]
+    if (valued && String(valued.value).toLowerCase() === wanted) return { ok: true, text: String(valued.value), error: "" }
+  }
+  return { ok: false, text: "", error: "\"" + text + "\" is not an option" }
 }
 
 function resolvePlaceholder(placeholder, ctx) {
   if (placeholder.kind === "argument") {
     var provided = ctx.arguments && ctx.arguments[placeholder.name]
     var text = provided == null || provided === "" ? (placeholder.defaultValue || "") : provided
-    return { ok: true, text: optionValue(placeholder, String(text)), error: "" }
+    return optionValue(placeholder, String(text))
   }
   if (placeholder.kind === "clipboard") {
     var offset = parseInt(placeholder.attrs.offset || "0", 10)
@@ -592,10 +609,23 @@ function expandHome(url, home) {
 }
 
 function openArgv(openWith, url, home) {
-  var target = expandHome(url, home)
+  var target = expandHome(url, home).trim()
+  // Omarchy's xdg-open is a script that rejects "--" ("unexpected option '--'").
+  // A target that starts with "-" would be read as an option, so it is refused.
+  if (!target || target.charAt(0) === "-") return null
   var app = String(openWith || "").trim()
-  if (app) return ["uwsm-app", "--", "gtk-launch", "--", app, target]
-  return ["xdg-open", "--", target]
+  if (!app) return ["xdg-open", target]
+  if (!isDesktopId(app)) return null
+  return ["uwsm-app", "--", "gtk-launch", "--", app, target]
+}
+
+// http(s) goes through Omarchy's browser launcher, as the web-search fallbacks do.
+// Anything else (spotify://, a file) uses xdg-open with no "--".
+function browserArgv(url) {
+  var target = String(url || "").trim()
+  if (!target || target.charAt(0) === "-") return null
+  if (/^https?:\/\//i.test(target)) return ["omarchy-launch-browser", target]
+  return openArgv("", target)
 }
 
 function faviconFor(link) {
@@ -650,6 +680,7 @@ function randomUuid() {
   for (var i = 0; i < 36; i++) {
     if (i === 8 || i === 13 || i === 18 || i === 23) out += "-"
     else if (i === 14) out += "4"
+    else if (i === 19) out += hex.charAt(8 + Math.floor(Math.random() * 4))
     else out += hex.charAt(Math.floor(Math.random() * 16))
   }
   return out
@@ -668,6 +699,7 @@ if (typeof module !== "undefined") {
     parseLink: parseLink,
     expand: expand,
     openArgv: openArgv,
+    browserArgv: browserArgv,
     toCandidate: toCandidate,
     candidateItems: candidateItems,
     randomUuid: randomUuid

@@ -197,9 +197,17 @@ test("uuid is filled in, and snippet, calculator, cursor, and browser-tab are re
 })
 
 test("opening uses xdg-open, or uwsm-app gtk-launch when an app is chosen", () => {
-  assert.deepEqual(QL.openArgv("", "https://example.com"), ["xdg-open", "--", "https://example.com"])
+  assert.deepEqual(QL.openArgv("", "https://example.com"), ["xdg-open", "https://example.com"])
   assert.deepEqual(QL.openArgv("firefox.desktop", "https://example.com"), ["uwsm-app", "--", "gtk-launch", "--", "firefox.desktop", "https://example.com"])
-  assert.deepEqual(QL.openArgv("", "~/Downloads", "/home/rafa"), ["xdg-open", "--", "/home/rafa/Downloads"])
+  assert.deepEqual(QL.openArgv("", "~/Downloads", "/home/rafa"), ["xdg-open", "/home/rafa/Downloads"])
+  assert.equal(QL.openArgv("", "-rf"), null)
+  assert.equal(QL.openArgv("", "  -rf  "), null)
+  assert.equal(QL.openArgv("not a desktop id", "https://example.com"), null)
+  assert.equal(QL.openArgv("-evil.desktop", "https://example.com"), null)
+  assert.deepEqual(QL.browserArgv("https://example.com/a"), ["omarchy-launch-browser", "https://example.com/a"])
+  assert.deepEqual(QL.browserArgv("HTTP://example.com"), ["omarchy-launch-browser", "HTTP://example.com"])
+  assert.deepEqual(QL.browserArgv("spotify://track/1"), ["xdg-open", "spotify://track/1"])
+  assert.equal(QL.browserArgv("-https://example.com"), null)
 })
 
 test("a quicklink is a root-search command, and a favicon is opt-in", () => {
@@ -298,8 +306,48 @@ test("save and import reject a remote icon and leave the library unchanged", () 
 test("an argument option title expands to its value", () => {
   const link = 'https://x.test/?tone={argument name="tone" options="happy, sad, title: professional"}'
   assert.equal(QL.expand(link, { arguments: { tone: "title" } }).url, "https://x.test/?tone=professional")
+  assert.equal(QL.expand(link, { arguments: { tone: "TITLE" } }).url, "https://x.test/?tone=professional")
   assert.equal(QL.expand(link, { arguments: { tone: "professional" } }).url, "https://x.test/?tone=professional")
+  assert.equal(QL.expand(link, { arguments: { tone: "Professional" } }).url, "https://x.test/?tone=professional")
   assert.equal(QL.expand(link, { arguments: { tone: "happy" } }).url, "https://x.test/?tone=happy")
+  assert.equal(QL.expand(link, { arguments: { tone: "Happy" } }).url, "https://x.test/?tone=happy")
+  const rejected = QL.expand(link, { arguments: { tone: "nope" } })
+  assert.equal(rejected.ok, false)
+  assert.match(rejected.error, /option/i)
+  assert.equal(QL.expand(link, { arguments: { tone: "" } }).ok, false)
+})
+
+test("a link that starts with a dash is rejected when it is saved and when it is opened", () => {
+  const doc = QL.createDocument()
+  assert.match(QL.save(doc, { name: "Dash", link: "-https://x.test" }, { now: 1 }).error, /-/)
+  assert.deepEqual(doc.items, [])
+  assert.match(QL.importText(doc, JSON.stringify([{ name: "Dash", link: " -rf" }]), { now: 1 }).error, /-/)
+  assert.deepEqual(doc.items, [])
+  const saved = QL.save(doc, { name: "Arg", link: "{argument name=\"q\"}", openWith: "" }, { now: 1, id: "ql-arg" })
+  assert.equal(saved.error, "")
+  const expanded = QL.expand(saved.item.link, { arguments: { q: "-rf" } })
+  assert.equal(expanded.ok, true)
+  assert.equal(QL.openArgv("", expanded.url), null)
+})
+
+test("openWith has to be a desktop id", () => {
+  const doc = QL.createDocument()
+  const ok = QL.save(doc, { name: "Browser", link: "https://x.test", openWith: "org.gnome.Music.desktop" }, { now: 1, id: "ql-app" })
+  assert.equal(ok.error, "")
+  assert.equal(ok.item.openWith, "org.gnome.Music.desktop")
+  assert.equal(QL.save(doc, { name: "Plain", link: "https://y.test", openWith: "" }, { now: 1 }).error, "")
+  for (const openWith of ["not a desktop id", "-evil.desktop", "foo/bar.desktop", "firefox"]) {
+    assert.match(QL.save(doc, { name: "Bad", link: "https://bad.test", openWith }, { now: 1 }).error, /desktop/i, openWith)
+  }
+  assert.match(QL.importText(doc, JSON.stringify([{ name: "Bad", link: "https://bad.test", openWith: "nope" }]), { now: 1 }).error, /desktop/i)
+  assert.match(QL.update(ok.doc, { id: "ql-app", openWith: "firefox" }, { now: 2 }).error, /desktop/i)
+  assert.equal(QL.get(ok.doc, "ql-app").openWith, "org.gnome.Music.desktop")
+})
+
+test("randomUuid sets the version 4 and variant bits", () => {
+  for (let i = 0; i < 40; i++) {
+    assert.match(QL.randomUuid(), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
+  }
 })
 
 test("a URL query needs a scheme and a host, and a hit stays above it", () => {

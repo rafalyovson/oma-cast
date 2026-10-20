@@ -77,6 +77,12 @@ To remove it: `oma-cast uninstall`.
 | `Esc` / `Shift+Esc` | Back / back to root |
 | `Ctrl +` / `Ctrl −` / `Ctrl 0` | Zoom |
 
+## Quicklinks
+
+Create, search, edit, and delete a link from the launcher, or import and export the library as JSON. A link can ask for arguments before it opens. One that starts with `-` is rejected. With no app chosen it opens with `xdg-open`. An http(s) address from Open in Browser, and the Google and DuckDuckGo fallbacks, open with `omarchy-launch-browser`.
+
+Favicons stay off. Set `"quicklinkFavicons": true` in `~/.config/oma-cast/config.json` to show one for an `https` link, from `https://icons.duckduckgo.com/ip3/<host>.ico`. An `http` link does not get one.
+
 ## CLI
 
 ```sh
@@ -92,7 +98,8 @@ oma-cast is early. Search, ranking and the Omarchy integration are done. Coming 
 
 - [ ] Settings window
 - [ ] Script Commands
-- [ ] Clipboard history, snippets, quicklinks, calculator
+- [x] Quicklinks
+- [ ] Clipboard history, snippets, calculator
 - [ ] Running Raycast extensions built from the open-source [`raycast/extensions`](https://github.com/raycast/extensions) repo
 - [ ] Window management
 - [ ] Importing your `.rayconfig` from macOS

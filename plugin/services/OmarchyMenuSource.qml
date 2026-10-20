@@ -37,7 +37,9 @@ Item {
       var script = OmarchyMenu.guardScript(source.tree)
       if (script) {
         guardProc.collected = ""
-        guardProc.command = ["bash", "-lc", script]
+        // -c inherits the shell's environment. -l re-reads the login
+        // profile on every open, which is the slow part of the refresh.
+        guardProc.command = ["bash", "-c", script]
         guardProc.running = true
       }
     }
@@ -71,7 +73,7 @@ Item {
     var spec = OmarchyMenu.PROVIDERS[source.tree.items[menuId].provider]
     providerProc.menuId = menuId
     providerProc.collected = ""
-    providerProc.command = ["bash", "-lc", spec.script]
+    providerProc.command = ["bash", "-c", spec.script]
     providerProc.running = true
   }
 
