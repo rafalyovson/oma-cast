@@ -210,6 +210,23 @@ test("opening uses xdg-open, or uwsm-app gtk-launch when an app is chosen", () =
   assert.equal(QL.browserArgv("-https://example.com"), null)
 })
 
+test("a bare host with no scheme opens as https in the browser", () => {
+  assert.deepEqual(QL.openArgv("", "test.am"), ["omarchy-launch-browser", "https://test.am"])
+  assert.deepEqual(QL.openArgv("", "  WWW.Example.com/a?q=1  "), ["omarchy-launch-browser", "https://WWW.Example.com/a?q=1"])
+  assert.deepEqual(QL.openArgv("", "test.am:443/x"), ["omarchy-launch-browser", "https://test.am:443/x"])
+  assert.deepEqual(QL.openArgv("firefox.desktop", "test.am"), ["uwsm-app", "--", "gtk-launch", "--", "firefox.desktop", "https://test.am"])
+  assert.deepEqual(QL.openArgv("", "~/Downloads", "/home/rafa"), ["xdg-open", "/home/rafa/Downloads"])
+  assert.deepEqual(QL.openArgv("", "/etc/hosts"), ["xdg-open", "/etc/hosts"])
+  assert.deepEqual(QL.openArgv("", "https://example.com"), ["xdg-open", "https://example.com"])
+  assert.deepEqual(QL.openArgv("", "spotify://track/1"), ["xdg-open", "spotify://track/1"])
+  assert.deepEqual(QL.openArgv("", "notes"), ["xdg-open", "notes"])
+  const saved = QL.save(QL.createDocument(), { name: "Am", link: "test.am", openWith: "" }, { now: 1, id: "ql-am" })
+  assert.equal(saved.error, "")
+  assert.equal(saved.item.link, "test.am")
+  const expanded = QL.expand(saved.item.link, {})
+  assert.deepEqual(QL.openArgv(saved.item.openWith, expanded.url), ["omarchy-launch-browser", "https://test.am"])
+})
+
 test("a quicklink is a root-search command, and a favicon is opt-in", () => {
   const item = { id: "ql-1", name: "Search DuckDuckGo", link: "https://duckduckgo.com/?q={argument name=\"query\"}", iconName: "", openWith: "" }
   const candidate = QL.toCandidate(item)
