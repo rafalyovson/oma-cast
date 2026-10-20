@@ -30,15 +30,16 @@ Item {
     source.refresh()
   }
 
-  // Re-answer guards and re-run providers; cheap enough to call on every open
-  // (about 250 ms of background work), and skipped while a run is in flight.
+  // Re-answer guards and re-run providers. Skipped while a run is in flight.
+  // The launcher calls this after the window has mapped, or on hide if that
+  // call is still waiting.
   function refresh() {
     if (!guardProc.running) {
       var script = OmarchyMenu.guardScript(source.tree)
       if (script) {
         guardProc.collected = ""
-        // -c inherits the shell's environment. -l re-reads the login
-        // profile on every open, which is the slow part of the refresh.
+        // bash -c. The shell process already has the user environment.
+        // bash -lc would re-read the login profile before the script.
         guardProc.command = ["bash", "-c", script]
         guardProc.running = true
       }

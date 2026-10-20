@@ -273,19 +273,30 @@ Item {
     if (!quicklinksStore.loaded) return { toast: { style: "failure", title: "Quicklinks are not loaded" } }
     var path = backend.paths.db + "/quicklinks-export.json"
     var json = JSON.stringify(Quicklinks.exportList(quicklinksStore.doc), null, 2) + "\n"
-    exportFile.failed = false
-    exportFile.errorText = ""
-    exportFile.path = path
-    exportFile.setText(json)
-    // blockWrites makes FileView.saveSync emit saveFailed before setText
-    // returns when it records an error (Quickshell 0.3.2). An atomic commit
-    // failure does not set that error, and setText returns without writing
-    // when the text is unchanged, so the bytes on disk are checked too.
-    if (exportFile.failed) return { toast: { style: "failure", title: "Could not write " + path + ": " + exportFile.errorText } }
-    var written = backend.readTextFile(path)
-    if (written.error || written.text !== json) {
-      var detail = written.error ? ": " + written.error : ""
-      return { toast: { style: "failure", title: "Could not write " + path + detail } }
+    // setText does not write when the new text equals what FileView already
+    // holds, and blockWrites reports saveFailed before setText returns only
+    // when FileView records an error (Quickshell 0.3.2). An atomic commit
+    // failure does not set that error. A deleted export of an unchanged
+    // library still matches memory, so compare the file and clear the loaded
+    // text before writing when the file is missing or different.
+    var onDisk = backend.readTextFile(path)
+    if (onDisk.error || onDisk.text !== json) {
+      exportFile.failed = false
+      exportFile.errorText = ""
+      exportFile.path = path
+      if (exportFile.text() === json) {
+        exportFile.setText("")
+        if (exportFile.failed) return { toast: { style: "failure", title: "Could not write " + path + ": " + exportFile.errorText } }
+        exportFile.failed = false
+        exportFile.errorText = ""
+      }
+      exportFile.setText(json)
+      if (exportFile.failed) return { toast: { style: "failure", title: "Could not write " + path + ": " + exportFile.errorText } }
+      var written = backend.readTextFile(path)
+      if (written.error || written.text !== json) {
+        var detail = written.error ? ": " + written.error : ""
+        return { toast: { style: "failure", title: "Could not write " + path + detail } }
+      }
     }
     // wl-copy takes the file on stdin. Passing the JSON as an argument
     // fails once the library is over about 128 KiB, and the toast used to
@@ -618,14 +629,18 @@ Item {
     function onValuesChanged() { rebuildTimer.restart() }
   }
 
-  // Guards and providers describe live system state. Refreshing them starts
-  // a few hundred milliseconds of scripts, so wait until the layer has mapped.
-  // A toggle that hides again before then never starts them.
+  // Guards and providers describe live system state. Wait until the layer
+  // has mapped so the scripts do not compete with opening. A hide while
+  // that refresh is still waiting runs it immediately; cancelling it would
+  // leave checks, hidden items, and disabled states stale.
   Component.onDestruction: { settingsStore.flush(); frecencyStore.flush(); quicklinksStore.flush() }
   onNotification: function(method, data) {
     if (method !== "window.visibilityChanged") return
     if (data && data.visible) menuRefreshTimer.restart()
-    else menuRefreshTimer.stop()
+    else if (menuRefreshTimer.running) {
+      menuRefreshTimer.stop()
+      menuSource.refresh()
+    }
   }
 
   Timer {

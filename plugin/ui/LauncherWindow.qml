@@ -175,6 +175,9 @@ OverlayWindow {
       return
     }
     var keepId = !resetSelection && window.selectedRow ? window.selectedRow.itemId : ""
+    // A failed search used to leave the previous key in place, so returning
+    // to that query skipped the rebuild and the cleared rows stayed empty.
+    window.listKey = ""
     rows.clear()
     if (window.editor) {
       window.listKey = key
