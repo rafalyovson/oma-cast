@@ -122,7 +122,7 @@ Works:
   - A launch from root clears the query [I].
   - A row is selected on hover only after a real pointer move (Omarchy's PointerMoveGate).
 - **Latency:** show → mapped in 37–44 ms, hide in 9–25 ms (`tests/smoke.sh`).
-- **Tests:** 69 passing unit tests, 1 skipped (`TZ=UTC node --test tests/*.test.js`). The skip is the installed Omarchy menu parse, which needs the live shell.
+- **Tests:** 71 passing unit tests, 1 skipped (`TZ=UTC node --test tests/*.test.js`). The skip is the installed Omarchy menu parse, which needs the live shell.
 
 Stubbed / not yet:
 - Keys that arrive before OverlayWindow grants Exclusive focus still go to the window underneath. The text field is focused on show, so keys that reach the surface are not dropped.

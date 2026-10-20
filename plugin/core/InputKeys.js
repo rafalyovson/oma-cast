@@ -18,8 +18,13 @@ var Key = {
   Down: 0x01000015,
   Space: 0x20,
   A: 0x41,
+  C: 0x43,
+  K: 0x4b,
   U: 0x55,
-  V: 0x56
+  V: 0x56,
+  X: 0x58,
+  Y: 0x59,
+  Z: 0x5a
 }
 
 function flagged(mods, flag) {
@@ -39,9 +44,10 @@ function isPlainText(event) {
   return code >= 32 && code !== 127
 }
 
-// "field" lets the TextInput edit. "paste" and "clear" are launcher actions
-// because Ctrl+U is not a TextInput binding, and an empty Qt clipboard has
-// to fall through to wl-paste. Everything else stays a launcher shortcut.
+// "field" lets the TextInput edit. "paste" stays here so an empty Qt
+// clipboard can fall through to wl-paste. "clear" is Ctrl+U, which wipes
+// the whole field. Qt binds Ctrl+K to delete-to-end, so a Ctrl+K the
+// launcher does not use has to be swallowed before it reaches the field.
 function owner(event, text, opts) {
   var key = event.key
   var mods = event.modifiers || 0
@@ -86,10 +92,26 @@ function applyPaste(text, start, end, incoming) {
   return { text: value.slice(0, a) + chunk + value.slice(b), cursor: a + chunk.length }
 }
 
+// Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y, Ctrl+C, and Ctrl+X are the field's own
+// undo, redo, copy, and cut. Every other Ctrl, Alt, or Meta chord is a
+// launcher shortcut or nothing, and must not type into the field.
+function swallowModifier(event) {
+  var mods = event.modifiers || 0
+  var ctrl = flagged(mods, Control)
+  var alt = flagged(mods, Alt)
+  var meta = flagged(mods, Meta)
+  if (!ctrl && !alt && !meta) return false
+  if (alt || meta) return true
+  var shift = flagged(mods, Shift)
+  var key = event.key
+  if (shift) return key !== Key.Z
+  return key !== Key.Z && key !== Key.Y && key !== Key.C && key !== Key.X
+}
+
 function shapePaste(text, blockSpace) {
   var value = String(text || "").replace(/\r\n/g, "\n").replace(/\r/g, "\n")
   if (blockSpace) return value.replace(/\s+/g, "")
-  return value.replace(/\n+/g, " ")
+  return value.replace(/\n+$/g, "").replace(/\n+/g, " ")
 }
 
 if (typeof module !== "undefined") {
@@ -97,6 +119,7 @@ if (typeof module !== "undefined") {
     Key: Key,
     Mod: { Shift: Shift, Control: Control, Alt: Alt, Meta: Meta },
     owner: owner,
+    swallowModifier: swallowModifier,
     pastePlan: pastePlan,
     applyPaste: applyPaste,
     shapePaste: shapePaste

@@ -37,7 +37,13 @@ Rectangle {
 
   readonly property alias filterField: filterInput
 
-  onFilterChanged: selectedIndex = 0
+  onFilterChanged: {
+    selectedIndex = 0
+    if (filterInput && filterInput.text !== panel.filter) {
+      filterInput.text = panel.filter
+      filterInput.cursorPosition = filterInput.text.length
+    }
+  }
   onActionsChanged: selectedIndex = 0
 
   width: px(340)
@@ -152,6 +158,23 @@ Rectangle {
     anchors.bottom: parent.bottom
     height: panel.px(38)
 
+    Text {
+      anchors.left: parent.left
+      anchors.leftMargin: panel.px(14)
+      anchors.right: parent.right
+      anchors.rightMargin: panel.px(14)
+      anchors.verticalCenter: parent.verticalCenter
+      height: parent.height
+      visible: filterInput.text.length === 0
+      textFormat: Text.PlainText
+      text: "Search for actions…"
+      color: Util.alpha(panel.look.foreground, 0.45)
+      font.family: filterInput.font.family
+      font.pixelSize: filterInput.font.pixelSize
+      verticalAlignment: Text.AlignVCenter
+      elide: Text.ElideRight
+    }
+
     TextInput {
       id: filterInput
       anchors.left: parent.left
@@ -169,8 +192,6 @@ Rectangle {
       font.family: panel.look.fontFamily
       font.pixelSize: Math.round(Style.font.body * panel.zoom)
       verticalAlignment: TextInput.AlignVCenter
-      placeholderText: "Search for actions…"
-      placeholderTextColor: Util.alpha(panel.look.foreground, 0.45)
       cursorDelegate: Rectangle {
         width: Math.max(1, Style.space(2))
         color: panel.look.accent
@@ -178,12 +199,12 @@ Rectangle {
       }
       Keys.priority: Keys.BeforeItem
       Keys.onPressed: function(event) { if (panel.keyHandler && panel.keyHandler(event)) event.accepted = true }
-      onTextEdited: panel.filter = text
+      onTextEdited: if (panel.filter !== text) panel.filter = text
 
-      TapHandler {
+      MouseArea {
+        anchors.fill: parent
         acceptedButtons: Qt.MiddleButton
-        gesturePolicy: TapHandler.ReleaseWithinBounds
-        onTapped: if (panel.pasteHandler) panel.pasteHandler(filterInput)
+        onClicked: if (panel.pasteHandler) panel.pasteHandler(filterInput)
       }
     }
   }

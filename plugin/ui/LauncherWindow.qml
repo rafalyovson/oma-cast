@@ -362,7 +362,6 @@ OverlayWindow {
   function startFieldPaste(field, primary) {
     if (!field || fieldPaste.running) return
     fieldPaste.target = field
-    fieldPaste.prior = String(fieldPasteOut.text || "")
     fieldPaste.command = primary
       ? ["wl-paste", "-n", "--primary", "--type", "text/plain"]
       : ["wl-paste", "-n", "--type", "text/plain"]
@@ -373,11 +372,7 @@ OverlayWindow {
     if (!field) field = window.activeField()
     if (!field) return
     if (primary) {
-      var before = field.text
-      Qt.callLater(function() {
-        if (field.text !== before) return
-        window.startFieldPaste(field, true)
-      })
+      window.startFieldPaste(field, true)
       return
     }
     var plan = InputKeys.pastePlan(window.readQtClipboard())
@@ -446,6 +441,9 @@ OverlayWindow {
     if (owned === "paste") { window.pasteInto(false); return true }
     if (owned === "clear") { window.clearActiveText(); return true }
     if (owned === "field") return false
+    // Undo, redo, copy, and cut belong to the field in every view, including
+    // the alias editor and the action-panel filter.
+    if ((event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)) && !InputKeys.swallowModifier(event)) return false
     if (owned === "backspace-empty") {
       if (window.actionPanelOpen) return true
       if (!window.atRoot) { window.pop(); return true }
@@ -485,6 +483,7 @@ OverlayWindow {
       }
     }
 
+    if (InputKeys.swallowModifier(event)) return true
     return false
   }
 
@@ -554,6 +553,23 @@ OverlayWindow {
         }
       }
 
+      Text {
+        anchors.left: lead.right
+        anchors.leftMargin: window.px(12)
+        anchors.right: parent.right
+        anchors.rightMargin: window.px(20)
+        anchors.verticalCenter: parent.verticalCenter
+        height: parent.height
+        visible: queryInput.text.length === 0
+        textFormat: Text.PlainText
+        text: window.placeholder
+        color: Util.alpha(window.look.foreground, 0.45)
+        font.family: queryInput.font.family
+        font.pixelSize: queryInput.font.pixelSize
+        verticalAlignment: Text.AlignVCenter
+        elide: Text.ElideRight
+      }
+
       TextInput {
         id: queryInput
         anchors.left: lead.right
@@ -573,8 +589,6 @@ OverlayWindow {
         font.family: window.look.fontFamily
         font.pixelSize: Math.round(Style.font.heading * 1.15 * window.zoom)
         verticalAlignment: TextInput.AlignVCenter
-        placeholderText: window.placeholder
-        placeholderTextColor: Util.alpha(window.look.foreground, 0.45)
         cursorDelegate: Rectangle {
           width: Math.max(1, Style.space(2))
           color: window.look.accent
@@ -584,10 +598,12 @@ OverlayWindow {
         Keys.onPressed: function(event) { if (window.handleKey(event)) event.accepted = true }
         onTextEdited: window.queryEdited(text)
 
-        TapHandler {
+        // TextInput would insert the primary selection itself, newlines and
+        // all. Taking the middle button here sends it through shapePaste.
+        MouseArea {
+          anchors.fill: parent
           acceptedButtons: Qt.MiddleButton
-          gesturePolicy: TapHandler.ReleaseWithinBounds
-          onTapped: window.pasteInto(true, queryInput)
+          onClicked: window.pasteInto(true, queryInput)
         }
       }
 
@@ -822,17 +838,14 @@ OverlayWindow {
   Process {
     id: fieldPaste
     property var target: null
-    property string prior: ""
-    stdout: StdioCollector { id: fieldPasteOut }
-    onExited: function(exitCode) {
-      var field = fieldPaste.target
-      var prior = fieldPaste.prior
-      fieldPaste.target = null
-      if (exitCode !== 0 || !field) return
-      var all = String(fieldPasteOut.text || "")
-      var chunk = all.indexOf(prior) === 0 ? all.slice(prior.length) : all
-      fieldPaste.prior = all
-      window.insertInto(field, chunk)
+    stdout: StdioCollector {
+      id: fieldPasteOut
+      onStreamFinished: {
+        var field = fieldPaste.target
+        fieldPaste.target = null
+        if (field) window.insertInto(field, fieldPasteOut.text)
+      }
     }
+    onExited: function() { fieldPaste.target = null }
   }
 }
