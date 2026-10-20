@@ -222,6 +222,27 @@ function openWithLabel(entries, id, opts) {
   return current + " (not installed)"
 }
 
+// Icon stored on the Open With field. Empty id is Default. A catalog that
+// is not ready yet has no icon, so the field does not guess.
+function openWithIcon(entries, id, opts) {
+  var current = String(id || "").trim()
+  if (!current) return { iconName: "", glyph: "\uf0ac" }
+  if (!catalogReady(entries, opts)) return { iconName: "", glyph: "" }
+  var app = findApp(current, installedApps(entries))
+  if (!app) return { iconName: "", glyph: "" }
+  return { iconName: app.icon || "", glyph: "" }
+}
+
+// After a choice the list closes. Focus moves to the next field when one
+// exists. The last field keeps focus so the next Enter can save.
+function afterOpenWithPick(fieldCount, focus) {
+  var count = fieldCount | 0
+  var index = focus | 0
+  var next = index + 1
+  if (next < count) return { focus: next, listOpen: false }
+  return { focus: index, listOpen: false }
+}
+
 // Searchable Open With rows. Handlers for the link's scheme come first
 // when the entry has mimeTypes or a mimeType string. Quickshell 0.3.2's
 // DesktopEntry does not expose MimeType, so a live entry sorts with the rest.
@@ -914,6 +935,8 @@ if (typeof module !== "undefined") {
     installedApps: installedApps,
     openWithChoices: openWithChoices,
     openWithLabel: openWithLabel,
+    openWithIcon: openWithIcon,
+    afterOpenWithPick: afterOpenWithPick,
     prepareOpen: prepareOpen,
     importOpenWithIds: importOpenWithIds,
     browserArgv: browserArgv,

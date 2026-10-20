@@ -4,6 +4,7 @@ import Quickshell.Wayland
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
+import "../core/Quicklinks.js" as Quicklinks
 
 // Launcher surface (SPEC §5.1, §10.2): 750×475 at uiZoom 1, 66 px search
 // header, 42 px footer, centred horizontally about a quarter down the
@@ -64,7 +65,10 @@ OverlayWindow {
   }
   readonly property bool formActive: window.view.kind === "quicklink-form" || window.view.kind === "quicklink-args"
   // The Open With field searches the installed-app list instead of editing a desktop id.
+  // A choice sets this so the list closes while focus is still on that field.
+  property bool openWithListDismissed: false
   readonly property bool pickingApp: {
+    if (window.openWithListDismissed) return false
     if (window.view.kind !== "quicklink-form") return false
     var fields = window.view.fields || []
     var field = fields[window.view.focus || 0]
@@ -373,6 +377,7 @@ OverlayWindow {
 
   function setFormFocus(index) {
     var wasPicking = window.pickingApp
+    window.openWithListDismissed = false
     window.stashField()
     var view = window.view
     var fields = view.fields || []
@@ -421,19 +426,32 @@ OverlayWindow {
     if (!row || !window.pickingApp) return
     var view = window.view
     var fields = []
+    var pickerIndex = view.focus || 0
     for (var i = 0; i < view.fields.length; i++) {
       var copy = ({})
       for (var k in view.fields[i]) copy[k] = view.fields[i][k]
       if (copy.picker === "app") {
+        pickerIndex = i
         copy.value = row.itemId
         copy.display = row.title
+        copy.iconName = String(row.iconName || "")
+        copy.glyph = String(row.glyph || "")
       }
       fields.push(copy)
     }
+    var decision = Quicklinks.afterOpenWithPick(fields.length, pickerIndex)
     var stack = window.stack.slice()
-    stack[stack.length - 1] = Object.assign({}, view, { fields: fields })
+    stack[stack.length - 1] = Object.assign({}, view, { fields: fields, focus: decision.focus })
     window.stack = stack
+    if (decision.focus !== pickerIndex) {
+      window.openWithListDismissed = false
+      var next = fields[decision.focus]
+      window.query = next && next.picker === "app" ? "" : (next && next.value ? String(next.value) : "")
+      window.rebuild(true)
+      return
+    }
     window.query = ""
+    window.openWithListDismissed = true
     window.rebuild(true)
   }
 
@@ -508,6 +526,11 @@ OverlayWindow {
 
   function setQuery(next) {
     if (window.query === next) return
+    if (window.openWithListDismissed && window.view.kind === "quicklink-form") {
+      var pickerFields = window.view.fields || []
+      var pickerField = pickerFields[window.view.focus || 0]
+      if (pickerField && pickerField.picker === "app") window.openWithListDismissed = false
+    }
     window.query = next
     window.historyIndex = -1
     if (!window.editor || window.pickingApp) window.rebuild(true)
@@ -830,8 +853,44 @@ OverlayWindow {
               elide: Text.ElideRight
             }
 
-            Text {
+            Item {
+              id: fieldIcon
+              readonly property bool shown: modelData.picker === "app" && !(index === (window.view.focus || 0) && window.query)
+              visible: shown
+              width: shown ? window.px(18) : 0
+              height: window.px(18)
               anchors.left: fieldLabel.right
+              anchors.leftMargin: shown ? window.px(8) : 0
+              anchors.verticalCenter: parent.verticalCenter
+
+              Image {
+                id: fieldIconImage
+                anchors.fill: parent
+                visible: (modelData.iconName || "").length > 0 && (modelData.glyph || "").length === 0
+                fillMode: Image.PreserveAspectFit
+                asynchronous: true
+                sourceSize.width: width
+                sourceSize.height: height
+                source: {
+                  if (!visible) return ""
+                  var name = modelData.iconName || ""
+                  return window.appLibrary ? window.appLibrary.iconSource(name) : Quickshell.iconPath(name, "application-x-executable")
+                }
+              }
+
+              Text {
+                anchors.centerIn: parent
+                visible: (modelData.glyph || "").length > 0 && !fieldIconImage.visible
+                textFormat: Text.PlainText
+                text: modelData.glyph || ""
+                color: window.look.foreground
+                font.family: window.look.fontFamily
+                font.pixelSize: window.px(14)
+              }
+            }
+
+            Text {
+              anchors.left: fieldIcon.right
               anchors.leftMargin: window.px(8)
               anchors.right: parent.right
               anchors.rightMargin: window.px(12)

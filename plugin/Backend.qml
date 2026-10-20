@@ -207,6 +207,7 @@ Item {
   function quicklinkForm(mode, item) {
     var openWith = item && item.openWith ? String(item.openWith) : ""
     var apps = backend.installedCatalog([openWith])
+    var openWithIcon = Quicklinks.openWithIcon(apps, openWith, { ready: backend.appsReady })
     return {
       kind: "quicklink-form",
       mode: mode,
@@ -216,7 +217,7 @@ Item {
       fields: [
         { key: "name", label: "Name", value: item && item.name ? item.name : "" },
         { key: "link", label: "Link", value: item && item.link ? item.link : "" },
-        { key: "openWith", label: "Open with", value: openWith, display: Quicklinks.openWithLabel(apps, openWith, { ready: backend.appsReady }), picker: "app" }
+        { key: "openWith", label: "Open with", value: openWith, display: Quicklinks.openWithLabel(apps, openWith, { ready: backend.appsReady }), iconName: openWithIcon.iconName, glyph: openWithIcon.glyph, picker: "app" }
       ]
     }
   }
