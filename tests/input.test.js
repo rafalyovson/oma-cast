@@ -46,7 +46,25 @@ test("paste replaces the selection and keeps a single line", () => {
   assert.deepEqual(InputKeys.applyPaste("abcd", 1, 3, "XY"), { text: "aXYd", cursor: 3 })
   assert.deepEqual(InputKeys.applyPaste("abcd", 4, 4, "Z"), { text: "abcdZ", cursor: 5 })
   assert.equal(InputKeys.shapePaste("a\nb", false), "a b")
-  assert.equal(InputKeys.shapePaste("a b", true), "ab")
+  assert.equal(InputKeys.shapePaste("a\nb\n", false), "a b")
+  assert.equal(InputKeys.shapePaste("hello\n", false), "hello")
+  assert.equal(InputKeys.shapePaste("hello \n", false), "hello ")
+  assert.equal(InputKeys.shapePaste("a\r\nb\r\n", false), "a b")
+  assert.equal(InputKeys.shapePaste("a b\n", true), "ab")
+})
+
+test("unhandled Ctrl, Alt, and Meta chords are swallowed, and undo copy cut pass through", () => {
+  assert.equal(InputKeys.swallowModifier(event(Key.A, Mod.Alt)), true)
+  assert.equal(InputKeys.swallowModifier(event(Key.A, Mod.Control | Mod.Alt)), true)
+  assert.equal(InputKeys.swallowModifier(event(Key.A, Mod.Meta)), true)
+  assert.equal(InputKeys.swallowModifier(event(Key.K, Mod.Control)), true)
+  assert.equal(InputKeys.swallowModifier(event(Key.Z, Mod.Control)), false)
+  assert.equal(InputKeys.swallowModifier(event(Key.Y, Mod.Control)), false)
+  assert.equal(InputKeys.swallowModifier(event(Key.C, Mod.Control)), false)
+  assert.equal(InputKeys.swallowModifier(event(Key.X, Mod.Control)), false)
+  assert.equal(InputKeys.swallowModifier(event(Key.Z, Mod.Control | Mod.Shift)), false)
+  assert.equal(InputKeys.swallowModifier(event(Key.Z, Mod.Control | Mod.Alt)), true)
+  assert.equal(InputKeys.swallowModifier(event(Key.A, 0, "a")), false)
 })
 
 test("show and hide do not read the clipboard, and each typing surface is a TextInput", () => {
@@ -64,4 +82,33 @@ test("show and hide do not read the clipboard, and each typing surface is a Text
   assert.doesNotMatch(launcher, /id: keyCatcher/)
   assert.match(panel, /id: filterInput/)
   assert.match(panel, /TextInput \{/)
+  assert.doesNotMatch(launcher, /placeholderText/)
+  assert.doesNotMatch(panel, /placeholderText/)
+  assert.match(launcher, /text: window\.placeholder/)
+  assert.match(panel, /Search for actions/)
+  assert.match(launcher, /onStreamFinished:/)
+  assert.doesNotMatch(launcher, /fieldPaste\.prior/)
+  assert.match(launcher, /swallowModifier\(event\)/)
+  const pasteFn = launcher.slice(launcher.indexOf("function pasteInto("), launcher.indexOf("function recallHistory"))
+  assert.match(pasteFn, /startFieldPaste\(field, true\)/)
+  assert.doesNotMatch(pasteFn, /callLater|field\.text !==/)
+  assert.match(panel, /filterInput\.text !== panel\.filter/)
+  assert.match(panel, /panel\.filter !== text/)
+})
+
+const { spawnSync } = require("node:child_process")
+
+function qmllintBin() {
+  if (fs.existsSync("/usr/lib/qt6/bin/qmllint")) return "/usr/lib/qt6/bin/qmllint"
+  const found = spawnSync("sh", ["-c", "command -v qmllint"], { encoding: "utf8" })
+  return found.status === 0 ? found.stdout.trim() : ""
+}
+
+const qmllint = qmllintBin()
+
+test("qmllint finds no placeholder properties on the text fields", { skip: !qmllint }, () => {
+  const files = ["LauncherWindow.qml", "ActionPanel.qml"].map((name) => path.join(__dirname, "../plugin/ui", name))
+  const run = spawnSync(qmllint, files, { encoding: "utf8" })
+  const hits = `${run.stdout || ""}\n${run.stderr || ""}`.split("\n").filter((line) => /no property "placeholderText/.test(line))
+  assert.deepEqual(hits, [])
 })
