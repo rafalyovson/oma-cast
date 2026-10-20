@@ -330,6 +330,48 @@ test("a link that starts with a dash is rejected when it is saved and when it is
   assert.equal(QL.openArgv("", expanded.url), null)
 })
 
+test("Open With lists installed apps, prefers the link scheme, and keeps a missing id visible", () => {
+  const apps = [
+    { id: "firefox", name: "Firefox", icon: "firefox", mimeTypes: "x-scheme-handler/https;text/html" },
+    { id: "chromium.desktop", name: "Chromium", icon: "chromium", mimeTypes: ["x-scheme-handler/https", "x-scheme-handler/http"] },
+    { id: "org.gnome.Music.desktop", name: "Music", icon: "music", mimeTypes: ["x-scheme-handler/spotify"] },
+    { id: "Alacritty.desktop", name: "Alacritty", icon: "Alacritty", mimeTypes: [] }
+  ]
+  const all = QL.openWithChoices(apps, { link: "https://example.com/{argument name=\"q\"}", query: "", current: "firefox.desktop" })
+  assert.equal(all[0].id, "")
+  assert.equal(all[0].title, "Default (browser / xdg-open)")
+  assert.deepEqual(all.slice(1).map((row) => row.id), ["chromium.desktop", "firefox.desktop", "Alacritty.desktop", "org.gnome.Music.desktop"])
+  assert.equal(all[2].iconName, "firefox")
+  assert.equal(QL.openWithLabel(apps, "firefox.desktop"), "Firefox")
+  assert.equal(QL.openWithLabel(apps, ""), "Default (browser / xdg-open)")
+
+  const found = QL.openWithChoices(apps, { link: "https://example.com", query: "fire", current: "" })
+  assert.deepEqual(found.map((row) => row.title), ["Firefox"])
+
+  const spotify = QL.openWithChoices(apps, { link: "spotify://track/1", query: "", current: "" })
+  assert.equal(spotify[1].id, "org.gnome.Music.desktop")
+  assert.ok(spotify.some((row) => row.id === "Alacritty.desktop"))
+
+  const missing = QL.openWithChoices(apps, { link: "https://example.com", query: "", current: "gone.desktop" })
+  assert.equal(missing[1].id, "gone.desktop")
+  assert.equal(missing[1].title, "gone.desktop (not installed)")
+  assert.equal(QL.openWithLabel(apps, "gone.desktop"), "gone.desktop (not installed)")
+
+  const doc = QL.createDocument()
+  const saved = QL.save(doc, { name: "Browser", link: "https://x.test", openWith: "firefox.desktop" }, { now: 1, id: "ql-app", installed: apps })
+  assert.equal(saved.error, "")
+  assert.equal(saved.item.openWith, "firefox.desktop")
+  assert.match(QL.save(doc, { name: "Missing", link: "https://y.test", openWith: "gone.desktop" }, { now: 1, installed: apps }).error, /installed/i)
+  const imported = QL.importText(doc, JSON.stringify([{ name: "Music", link: "spotify://x", openWith: "org.gnome.Music.desktop" }]), { now: 1, installed: apps })
+  assert.equal(imported.error, "")
+  assert.equal(imported.added, 1)
+  assert.match(QL.importText(doc, JSON.stringify([{ name: "Gone", link: "https://z.test", openWith: "gone.desktop" }]), { now: 1, installed: apps }).error, /installed/i)
+  const renamed = QL.update(saved.doc, { id: "ql-app", name: "Web" }, { now: 2, installed: [] })
+  assert.equal(renamed.error, "")
+  assert.equal(renamed.item.openWith, "firefox.desktop")
+  assert.match(QL.update(saved.doc, { id: "ql-app", openWith: "gone.desktop" }, { now: 2, installed: apps }).error, /installed/i)
+})
+
 test("openWith has to be a desktop id", () => {
   const doc = QL.createDocument()
   const ok = QL.save(doc, { name: "Browser", link: "https://x.test", openWith: "org.gnome.Music.desktop" }, { now: 1, id: "ql-app" })

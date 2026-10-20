@@ -63,11 +63,19 @@ OverlayWindow {
     return kind === "alias" || kind === "quicklink-form" || kind === "quicklink-args" || kind === "quicklink-import" || kind === "confirm-delete-quicklink"
   }
   readonly property bool formActive: window.view.kind === "quicklink-form" || window.view.kind === "quicklink-args"
+  // The Open With field searches the installed-app list instead of editing a desktop id.
+  readonly property bool pickingApp: {
+    if (window.view.kind !== "quicklink-form") return false
+    var fields = window.view.fields || []
+    var field = fields[window.view.focus || 0]
+    return !!(field && field.picker === "app")
+  }
   readonly property string placeholder: {
     var kind = window.view.kind
     if (kind === "alias") return "Type an alias, then press ↵"
     if (kind === "quicklink-import") return "Paste JSON or a file path, then press ↵"
     if (kind === "confirm-delete-quicklink") return "Press ↵ to delete"
+    if (window.pickingApp) return "Search apps…"
     if (window.formActive) {
       var fields = window.view.fields || []
       var field = fields[window.view.focus || 0]
@@ -129,6 +137,7 @@ OverlayWindow {
     if (next.kind === "alias" || next.kind === "quicklink-import") return next.value || ""
     if (next.fields && next.fields.length) {
       var field = next.fields[next.focus || 0]
+      if (field && field.picker) return ""
       return field && field.value ? String(field.value) : ""
     }
     return ""
@@ -154,12 +163,21 @@ OverlayWindow {
 
   // ---------------------------------------------------------------- rows
 
+  function fieldValue(key) {
+    var fields = (window.view && window.view.fields) || []
+    for (var i = 0; i < fields.length; i++) if (fields[i].key === key) return String(fields[i].value || "")
+    return ""
+  }
+
   function listSignature() {
     var view = window.view || ({})
     return [
       view.kind || "",
       view.menuId || "",
+      String(view.focus || 0),
       window.query,
+      window.fieldValue("link"),
+      window.fieldValue("openWith"),
       window.backend.candidatesRevision,
       window.backend.dataRevision,
       window.backend.storeRevision,
@@ -171,14 +189,18 @@ OverlayWindow {
     pointerGate.reset()
     var key = window.listSignature()
     if (key === window.listKey) {
-      if (resetSelection) window.select(window.editor ? -1 : window.nextSelectable(-1, 1))
+      if (resetSelection) window.select(window.pickingApp ? window.openWithSelectIndex() : (window.editor ? -1 : window.nextSelectable(-1, 1)))
       return
     }
-    var keepId = !resetSelection && window.selectedRow ? window.selectedRow.itemId : ""
+    var keepId = !resetSelection && window.selectedRow ? window.selectedRow.itemId : null
     // A failed search used to leave the previous key in place, so returning
     // to that query skipped the rebuild and the cleared rows stayed empty.
     window.listKey = ""
     rows.clear()
+    if (window.pickingApp) {
+      window.fillOpenWithRows(keepId, key, resetSelection)
+      return
+    }
     if (window.editor) {
       window.listKey = key
       window.select(-1)
@@ -339,7 +361,8 @@ OverlayWindow {
     for (var i = 0; i < view.fields.length; i++) {
       var copy = ({})
       for (var k in view.fields[i]) copy[k] = view.fields[i][k]
-      if (i === focus) copy.value = window.query
+      // The picker query is a search filter. The stored value stays the desktop id.
+      if (i === focus && copy.picker !== "app") copy.value = window.query
       fields.push(copy)
     }
     var stack = window.stack.slice()
@@ -348,6 +371,7 @@ OverlayWindow {
   }
 
   function setFormFocus(index) {
+    var wasPicking = window.pickingApp
     window.stashField()
     var view = window.view
     var fields = view.fields || []
@@ -355,7 +379,61 @@ OverlayWindow {
     var stack = window.stack.slice()
     stack[stack.length - 1] = Object.assign({}, view, { focus: index })
     window.stack = stack
-    window.query = fields[index].value ? String(fields[index].value) : ""
+    var field = fields[index]
+    window.query = field && field.picker === "app" ? "" : (field && field.value ? String(field.value) : "")
+    if ((field && field.picker === "app") || wasPicking) window.rebuild(true)
+  }
+
+  // Empty filter keeps the saved app selected. A search starts at the first match.
+  function openWithSelectIndex() {
+    if (window.query) return window.nextSelectable(-1, 1)
+    var current = window.fieldValue("openWith")
+    for (var i = 0; i < rows.count; i++) if (rows.get(i).itemId === current) return i
+    return window.nextSelectable(-1, 1)
+  }
+
+  function fillOpenWithRows(keepId, key, resetSelection) {
+    var result = window.backend.callSync("quicklinks.openWithChoices", {
+      query: window.query,
+      link: window.fieldValue("link"),
+      current: window.fieldValue("openWith")
+    })
+    if (!result.ok) {
+      window.showToast("failure", result.error)
+      window.listKey = key
+      window.select(-1)
+      return
+    }
+    var choices = result.data || []
+    var keepIndex = -1
+    for (var r = 0; r < choices.length; r++) {
+      if (keepId !== null && String(choices[r].id || "") === String(keepId)) keepIndex = rows.count
+      rows.append(window.rowData(choices[r], "item"))
+    }
+    window.listKey = key
+    if (!resetSelection && keepIndex >= 0) window.select(keepIndex)
+    else window.select(window.openWithSelectIndex())
+  }
+
+  function chooseOpenWith() {
+    var row = window.selectedRow
+    if (!row || !window.pickingApp) return
+    var view = window.view
+    var fields = []
+    for (var i = 0; i < view.fields.length; i++) {
+      var copy = ({})
+      for (var k in view.fields[i]) copy[k] = view.fields[i][k]
+      if (copy.picker === "app") {
+        copy.value = row.itemId
+        copy.display = row.title
+      }
+      fields.push(copy)
+    }
+    var stack = window.stack.slice()
+    stack[stack.length - 1] = Object.assign({}, view, { fields: fields })
+    window.stack = stack
+    window.query = ""
+    window.rebuild(true)
   }
 
   function formPayload() {
@@ -426,7 +504,7 @@ OverlayWindow {
     if (window.query === next) return
     window.query = next
     window.historyIndex = -1
-    if (!window.editor) window.rebuild(true)
+    if (!window.editor || window.pickingApp) window.rebuild(true)
   }
 
   // ↑ on an empty root walks back through queries that launched something.
@@ -456,7 +534,9 @@ OverlayWindow {
       return
     }
     // pop-back-or-close [O]: clear the search, then go back, then close.
-    if (window.query && !window.editor) window.setQuery("")
+    // The Open With query is a search filter, so Escape clears it before leaving the form.
+    if (window.pickingApp && window.query) window.setQuery("")
+    else if (window.query && !window.editor) window.setQuery("")
     else if (!window.atRoot) window.pop()
     else window.dismissRequested()
   }
@@ -493,13 +573,24 @@ OverlayWindow {
       if (window.formActive) {
         var focus = window.view.focus || 0
         var last = (window.view.fields || []).length - 1
-        if (enter && (ctrl || focus >= last)) {
-          if (window.view.kind === "quicklink-args") window.submitQuicklinkArgs()
-          else window.saveQuicklink()
-          return true
+        if (window.pickingApp) {
+          if (enter && ctrl) { window.saveQuicklink(); return true }
+          if (enter) { window.chooseOpenWith(); return true }
+          if (key === Qt.Key_Down || (ctrl && key === Qt.Key_N)) { window.move(1); return true }
+          if (key === Qt.Key_Up || (ctrl && key === Qt.Key_P)) { window.move(-1); return true }
+          if (key === Qt.Key_PageDown) { window.move(8); return true }
+          if (key === Qt.Key_PageUp) { window.move(-8); return true }
+          if (key === Qt.Key_Tab) { window.setFormFocus(focus + 1); return true }
+          if (key === Qt.Key_Backtab) { window.setFormFocus(focus - 1); return true }
+        } else {
+          if (enter && (ctrl || focus >= last)) {
+            if (window.view.kind === "quicklink-args") window.submitQuicklinkArgs()
+            else window.saveQuicklink()
+            return true
+          }
+          if (enter || key === Qt.Key_Down || key === Qt.Key_Tab) { window.setFormFocus(focus + 1); return true }
+          if (key === Qt.Key_Up || key === Qt.Key_Backtab) { window.setFormFocus(focus - 1); return true }
         }
-        if (enter || key === Qt.Key_Down || key === Qt.Key_Tab) { window.setFormFocus(focus + 1); return true }
-        if (key === Qt.Key_Up || key === Qt.Key_Backtab) { window.setFormFocus(focus - 1); return true }
       } else if (window.view.kind === "alias") {
         if (enter) { window.saveAlias(); return true }
         if (key === Qt.Key_Space) return true
@@ -551,7 +642,7 @@ OverlayWindow {
   // edited): refresh what is on screen without losing the selection.
   Connections {
     target: window.backend
-    function onCandidatesRevisionChanged() { if (window.shown && !window.actionPanelOpen && !window.editor) window.rebuild(false) }
+    function onCandidatesRevisionChanged() { if (window.shown && !window.actionPanelOpen && (!window.editor || window.pickingApp)) window.rebuild(false) }
     function onQuicklinkReady(outcome) { window.applyLaunchOutcome(outcome) }
   }
 
@@ -739,7 +830,14 @@ OverlayWindow {
               anchors.rightMargin: window.px(12)
               anchors.verticalCenter: parent.verticalCenter
               textFormat: Text.PlainText
-              text: index === (window.view.focus || 0) ? window.query : String(modelData.value || "")
+              text: {
+                var focused = index === (window.view.focus || 0)
+                if (modelData.picker === "app") {
+                  if (focused && window.query) return window.query
+                  return String(modelData.display || modelData.value || "")
+                }
+                return focused ? window.query : String(modelData.value || "")
+              }
               color: window.look.foreground
               font.family: window.look.fontFamily
               font.pixelSize: Math.round(Style.font.title * window.zoom)
@@ -757,10 +855,13 @@ OverlayWindow {
 
       ListView {
         id: list
-        anchors.fill: parent
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        anchors.top: window.formActive ? formColumn.bottom : parent.top
         anchors.topMargin: window.px(4)
         anchors.bottomMargin: window.px(4)
-        visible: !window.editor
+        visible: !window.editor || window.pickingApp
         clip: true
         model: rows
         boundsBehavior: Flickable.StopAtBounds
@@ -773,7 +874,10 @@ OverlayWindow {
           // Only a real pointer move selects: a row sliding under a still
           // pointer (open, typing, scrolling) must not steal the cursor.
           onHovered: function(i, item, mouse) { if (!window.actionPanelOpen && pointerGate.moved(item, mouse)) window.select(i) }
-          onClicked: function(i) { window.perform("open", i) }
+          onClicked: function(i) {
+            if (window.pickingApp) { window.select(i); window.chooseOpenWith(); return }
+            window.perform("open", i)
+          }
         }
       }
 
@@ -873,7 +977,7 @@ OverlayWindow {
           window.selectedRow
           window.backend.storeRevision
           if (window.view.kind === "alias") return { title: "Save Alias", shortcut: "↵" }
-          if (window.view.kind === "quicklink-form") return { title: "Save Quicklink", shortcut: "↵" }
+          if (window.view.kind === "quicklink-form") return window.pickingApp ? { title: "Select App", shortcut: "↵" } : { title: "Save Quicklink", shortcut: "↵" }
           if (window.view.kind === "quicklink-args") return { title: "Open Quicklink", shortcut: "↵" }
           if (window.view.kind === "quicklink-import") return { title: "Import", shortcut: "↵" }
           if (window.view.kind === "confirm-delete-quicklink") return { title: "Delete Quicklink", shortcut: "↵" }

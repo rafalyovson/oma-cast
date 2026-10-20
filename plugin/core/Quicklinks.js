@@ -44,7 +44,7 @@ function blankResult(doc, error) {
   return { doc: doc, item: null, error: error, added: 0, skipped: 0 }
 }
 
-function buildItem(input, id, now) {
+function buildItem(input, id, now, ctx) {
   var name = String(input && input.name != null ? input.name : "").trim()
   var link = String(input && input.link != null ? input.link : "").trim()
   if (!name) return { error: "Quicklink needs a name" }
@@ -55,7 +55,8 @@ function buildItem(input, id, now) {
   var iconName = String(input.iconName || "").trim()
   if (iconName.indexOf("://") >= 0) return { error: "Quicklink iconName cannot be a remote URL" }
   var openWith = String(input.openWith || "").trim()
-  if (openWith && !isDesktopId(openWith)) return { error: "Quicklink openWith must be a desktop id" }
+  var openWithError = openWithProblem(openWith, ctx)
+  if (openWithError) return { error: openWithError }
   return {
     error: "",
     item: {
@@ -76,12 +77,157 @@ function isDesktopId(app) {
   return /^[A-Za-z0-9][A-Za-z0-9_.+-]*\.desktop$/.test(String(app || ""))
 }
 
+function stemOf(id) {
+  return String(id || "").replace(/\.desktop$/i, "").toLowerCase()
+}
+
+function canonicalDesktopId(id) {
+  var text = String(id || "").trim()
+  if (!text) return ""
+  if (/\.desktop$/i.test(text)) return text
+  return text + ".desktop"
+}
+
+function mimeList(entry) {
+  var raw = entry.mimeTypes
+  if (raw == null) raw = entry.mimeType
+  if (raw == null) return []
+  if (typeof raw === "string") {
+    var parts = raw.split(";")
+    var out = []
+    for (var i = 0; i < parts.length; i++) {
+      var piece = parts[i].trim()
+      if (piece) out.push(piece)
+    }
+    return out
+  }
+  if (typeof raw.length === "number") {
+    var list = []
+    for (var j = 0; j < raw.length; j++) if (raw[j]) list.push(String(raw[j]).trim())
+    return list
+  }
+  return []
+}
+
+// The same desktop entries the app search already uses. id may omit ".desktop".
+function installedApps(entries) {
+  var out = []
+  var list = entries || []
+  for (var i = 0; i < list.length; i++) {
+    var entry = list[i]
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue
+    var id = canonicalDesktopId(entry.id || entry.appId || "")
+    if (!isDesktopId(id)) continue
+    out.push({
+      id: id,
+      name: String(entry.name || entry.title || id),
+      icon: String(entry.icon || entry.iconName || ""),
+      mimeTypes: mimeList(entry)
+    })
+  }
+  return out
+}
+
+function appInstalled(openWith, apps) {
+  var stem = stemOf(openWith)
+  for (var i = 0; i < apps.length; i++) if (stemOf(apps[i].id) === stem) return true
+  return false
+}
+
+function openWithProblem(openWith, ctx) {
+  if (!openWith) return ""
+  if (!isDesktopId(openWith)) return "Quicklink openWith must be a desktop id"
+  if (!ctx || !ctx.installed) return ""
+  var allow = ctx.allowOpenWith ? canonicalDesktopId(ctx.allowOpenWith) : ""
+  if (allow && stemOf(allow) === stemOf(openWith)) return ""
+  if (!appInstalled(openWith, installedApps(ctx.installed))) return "Quicklink openWith is not an installed app"
+  return ""
+}
+
+function linkScheme(link) {
+  var head = String(link || "").split("{")[0].trim()
+  var match = /^([a-z][a-z0-9+.-]*):/i.exec(head)
+  return match ? match[1].toLowerCase() : ""
+}
+
+function handlesScheme(app, scheme) {
+  if (!scheme) return false
+  var wanted = "x-scheme-handler/" + scheme
+  var types = app.mimeTypes || []
+  for (var i = 0; i < types.length; i++) if (String(types[i]).toLowerCase() === wanted) return true
+  return false
+}
+
+function textMatches(text, query) {
+  if (!query) return true
+  return String(text || "").toLowerCase().indexOf(query) >= 0
+}
+
+function byAppName(a, b) {
+  var an = a.name.toLowerCase()
+  var bn = b.name.toLowerCase()
+  if (an < bn) return -1
+  if (an > bn) return 1
+  if (a.id < b.id) return -1
+  if (a.id > b.id) return 1
+  return 0
+}
+
+var DEFAULT_OPEN_WITH = "Default (browser / xdg-open)"
+
+function openWithLabel(entries, id) {
+  var current = String(id || "").trim()
+  if (!current) return DEFAULT_OPEN_WITH
+  var apps = installedApps(entries)
+  var stem = stemOf(current)
+  for (var i = 0; i < apps.length; i++) if (stemOf(apps[i].id) === stem) return apps[i].name
+  return current + " (not installed)"
+}
+
+// Searchable Open With rows. Handlers for the link's scheme come first
+// when the entry has mimeTypes or a mimeType string. Quickshell 0.3.2's
+// DesktopEntry does not expose MimeType, so a live entry sorts with the rest.
+// A saved id that is not installed stays in the list so edit can keep it.
+function openWithChoices(entries, opts) {
+  var options = opts || {}
+  var query = String(options.query || "").trim().toLowerCase()
+  var scheme = linkScheme(options.link)
+  var current = String(options.current || "").trim()
+  var apps = installedApps(entries)
+  var handlers = []
+  var rest = []
+  var seen = {}
+  for (var i = 0; i < apps.length; i++) {
+    var app = apps[i]
+    seen[stemOf(app.id)] = true
+    if (!textMatches(app.name + " " + app.id + " " + stemOf(app.id), query)) continue
+    if (handlesScheme(app, scheme)) handlers.push(app)
+    else rest.push(app)
+  }
+  handlers.sort(byAppName)
+  rest.sort(byAppName)
+  var rows = []
+  if (textMatches(DEFAULT_OPEN_WITH, query)) {
+    rows.push({ id: "", title: DEFAULT_OPEN_WITH, iconName: "", subtitle: "", missing: false, glyph: "\uf0ac" })
+  }
+  if (current && isDesktopId(current) && !seen[stemOf(current)] && textMatches(current + " (not installed)", query)) {
+    rows.push({ id: current, title: current + " (not installed)", iconName: "", subtitle: "", missing: true, glyph: "" })
+  }
+  for (var h = 0; h < handlers.length; h++) {
+    rows.push({ id: handlers[h].id, title: handlers[h].name, iconName: handlers[h].icon, subtitle: "", missing: false, glyph: "" })
+  }
+  for (var r = 0; r < rest.length; r++) {
+    rows.push({ id: rest[r].id, title: rest[r].name, iconName: rest[r].icon, subtitle: "", missing: false, glyph: "" })
+  }
+  return rows
+}
+
 function save(doc, input, ctx) {
   var now = ctx && typeof ctx.now === "number" ? ctx.now : Date.now()
   var next = cloneDoc(doc)
   var id = ctx && ctx.id ? String(ctx.id) : makeId(next, now)
   if (get(next, id)) return blankResult(doc, "Quicklink id already exists")
-  var built = buildItem(input, id, now)
+  var built = buildItem(input, id, now, ctx)
   if (built.error) return blankResult(doc, built.error)
   next.items.push(built.item)
   return { doc: next, item: built.item, error: "", added: 1, skipped: 0 }
@@ -98,7 +244,10 @@ function update(doc, patch, ctx) {
     iconName: patch.iconName !== undefined ? patch.iconName : current.iconName,
     openWith: patch.openWith !== undefined ? patch.openWith : current.openWith
   }
-  var built = buildItem(merged, id, current.createdAt)
+  var built = buildItem(merged, id, current.createdAt, {
+    installed: ctx && ctx.installed,
+    allowOpenWith: current.openWith
+  })
   if (built.error) return blankResult(doc, built.error)
   built.item.createdAt = current.createdAt
   built.item.updatedAt = now
@@ -144,7 +293,7 @@ function importText(doc, jsonString, ctx) {
       if (sameLink(next.items[j], { name: name, link: link })) { duplicate = true; break }
     }
     if (duplicate) { skipped++; continue }
-    var built = buildItem({ name: name, link: link, iconName: row.iconName, openWith: row.openWith }, makeId(next, now + i), now)
+    var built = buildItem({ name: name, link: link, iconName: row.iconName, openWith: row.openWith }, makeId(next, now + i), now, ctx)
     if (built.error) return blankResult(doc, built.error)
     next.items.push(built.item)
     added++
@@ -699,6 +848,9 @@ if (typeof module !== "undefined") {
     parseLink: parseLink,
     expand: expand,
     openArgv: openArgv,
+    installedApps: installedApps,
+    openWithChoices: openWithChoices,
+    openWithLabel: openWithLabel,
     browserArgv: browserArgv,
     toCandidate: toCandidate,
     candidateItems: candidateItems,

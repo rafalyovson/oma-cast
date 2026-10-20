@@ -172,6 +172,8 @@ Item {
   }
 
   function quicklinkForm(mode, item) {
+    var apps = backend.appEntries()
+    var openWith = item && item.openWith ? String(item.openWith) : ""
     return {
       kind: "quicklink-form",
       mode: mode,
@@ -181,7 +183,7 @@ Item {
       fields: [
         { key: "name", label: "Name", value: item && item.name ? item.name : "" },
         { key: "link", label: "Link", value: item && item.link ? item.link : "" },
-        { key: "openWith", label: "Open with", value: item && item.openWith ? item.openWith : "" }
+        { key: "openWith", label: "Open with", value: openWith, display: Quicklinks.openWithLabel(apps, openWith), picker: "app" }
       ]
     }
   }
@@ -330,7 +332,7 @@ Item {
       if (read.error) throw new Error("Could not read " + path + ": " + read.error)
       body = read.text
     }
-    var result = Quicklinks.importText(quicklinksStore.doc, body, { now: Date.now() })
+    var result = Quicklinks.importText(quicklinksStore.doc, body, { now: Date.now(), installed: backend.appEntries() })
     if (result.error) throw new Error(result.error)
     quicklinksStore.update(function() { return result.doc })
     backend.emit("quicklinks.updated", null)
@@ -548,6 +550,13 @@ Item {
 
     Rpc.register(backend.registry, "quicklinks", {
       list: function() { return quicklinksStore.loaded ? Quicklinks.list(quicklinksStore.doc) : [] },
+      openWithChoices: function(data) {
+        return Quicklinks.openWithChoices(backend.appEntries(), {
+          query: data && data.query,
+          link: data && data.link,
+          current: data && data.current
+        })
+      },
       getQuicklink: function(data) {
         var item = backend.quicklinkById(String(data && data.id || ""))
         if (!item) throw new Error("Quicklink not found")
@@ -556,7 +565,7 @@ Item {
       save: function(data) {
         if (!quicklinksStore.loaded) throw new Error("quicklinks not loaded")
         if (quicklinksStore.readOnly) throw new Error("quicklinks are read-only")
-        var result = Quicklinks.save(quicklinksStore.doc, data || {}, { now: Date.now() })
+        var result = Quicklinks.save(quicklinksStore.doc, data || {}, { now: Date.now(), installed: backend.appEntries() })
         if (result.error) throw new Error(result.error)
         quicklinksStore.update(function() { return result.doc })
         backend.emit("quicklinks.updated", { id: result.item.id })
@@ -565,7 +574,7 @@ Item {
       update: function(data) {
         if (!quicklinksStore.loaded) throw new Error("quicklinks not loaded")
         if (quicklinksStore.readOnly) throw new Error("quicklinks are read-only")
-        var result = Quicklinks.update(quicklinksStore.doc, data || {}, { now: Date.now() })
+        var result = Quicklinks.update(quicklinksStore.doc, data || {}, { now: Date.now(), installed: backend.appEntries() })
         if (result.error) throw new Error(result.error)
         quicklinksStore.update(function() { return result.doc })
         backend.emit("quicklinks.updated", { id: result.item.id })
