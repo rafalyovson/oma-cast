@@ -340,7 +340,7 @@ function update(doc, patch, ctx) {
     allowOpenWith: current.openWith
   })
   if (built.error) return blankResult(doc, built.error)
-  if (takenName(next, built.item.name, id)) return blankResult(doc, "Quicklink name is already used")
+  if (takenName(doc, built.item.name, id)) return blankResult(doc, "Quicklink name is already used")
   built.item.createdAt = current.createdAt
   built.item.updatedAt = now
   var next = cloneDoc(doc)
@@ -361,11 +361,11 @@ function sameLink(a, b) {
 }
 
 function takenName(doc, name, exceptId) {
-  var wanted = String(name || "").trim()
+  var wanted = String(name || "").trim().toLowerCase()
   var items = doc && doc.items ? doc.items : []
   for (var i = 0; i < items.length; i++) {
     if (exceptId && items[i].id === exceptId) continue
-    if (String(items[i].name || "").trim() === wanted) return true
+    if (String(items[i].name || "").trim().toLowerCase() === wanted) return true
   }
   return false
 }
@@ -731,8 +731,10 @@ function frenchLocale(locale) {
 
 function formatWithQt(ms, pattern, locale) {
   if (!locale || typeof Qt === "undefined" || !Qt.locale || !Qt.formatDateTime) return ""
-  // The 3-arg overload throws "incompatible arguments" on the live shell.
-  // An empty result lets defaultDate use the JS month names.
+  // Documented form: formatDateTime(date, format, localeFormatOption).
+  // The third argument is a FormatType such as Locale.ShortFormat, not a Locale.
+  // Passing Qt.locale() there does not convert, so a Qt that follows that
+  // signature throws "incompatible arguments". The catch uses the JS month names.
   try {
     var formatted = Qt.formatDateTime(new Date(ms), pattern, Qt.locale(String(locale).replace(/-/g, "_")))
     return formatted ? String(formatted) : ""
@@ -872,12 +874,16 @@ function encodeLiteral(text) {
 function expand(link, ctx) {
   var text = String(link || "")
   var context = ctx || {}
+  // A file path is handed to xdg-open or gtk-launch. Encoding its spaces
+  // turns "~/My Notes" into a missing file.
+  var keepLiteral = /^[/~]/.test(text.trim())
+  function literal(part) { return keepLiteral ? String(part) : encodeLiteral(part) }
   var out = ""
   var i = 0
   while (i < text.length) {
     var start = text.indexOf("{", i)
-    if (start < 0) { out += encodeLiteral(text.slice(i)); break }
-    out += encodeLiteral(text.slice(i, start))
+    if (start < 0) { out += literal(text.slice(i)); break }
+    out += literal(text.slice(i, start))
     var closed = placeholderEnd(text, start)
     if (closed.error) return { ok: false, url: "", error: closed.error }
     if (closed.end < 0) { out += "{"; i = start + 1; continue }
@@ -900,10 +906,13 @@ function expandHome(url, home) {
   return text
 }
 
+// [D] These last labels are file extensions, not TLDs.
+var FILE_EXT = { json: true, md: true, js: true, jsx: true, ts: true, tsx: true, txt: true, pdf: true, png: true, jpg: true, jpeg: true, gif: true, svg: true, html: true, css: true, xml: true }
+
 function isPort(text) {
   if (!/^\d{1,5}$/.test(text)) return false
   var n = parseInt(text, 10)
-  return n >= 0 && n <= 65535
+  return n >= 1 && n <= 65535
 }
 
 function isIpv4(host) {
@@ -916,11 +925,20 @@ function isIpv4(host) {
   return true
 }
 
+function isForbiddenHostChar(code) {
+  if (code === 0x200B || code === 0x200C || code === 0x200D || code === 0xFEFF || code === 0x2060 || code === 0x180E) return true
+  if (code === 0x200E || code === 0x200F) return true
+  if (code >= 0x202A && code <= 0x202E) return true
+  if (code >= 0x2066 && code <= 0x2069) return true
+  return false
+}
+
 function isHostLabel(label) {
   if (!label || label.length > 63) return false
   if (label.charAt(0) === "-" || label.charAt(label.length - 1) === "-") return false
   for (var i = 0; i < label.length; i++) {
     var code = label.charCodeAt(i)
+    if (isForbiddenHostChar(code)) return false
     if (code > 127) continue
     if (!/[A-Za-z0-9-]/.test(label.charAt(i))) return false
   }
@@ -933,13 +951,39 @@ function isDomain(host) {
   if (labels.length < 2) return false
   for (var i = 0; i < labels.length; i++) if (!isHostLabel(labels[i])) return false
   var last = labels[labels.length - 1]
+  if (FILE_EXT[last.toLowerCase()]) return false
   for (var c = 0; c < last.length; c++) {
     if (last.charCodeAt(c) > 127 || /[A-Za-z]/.test(last.charAt(c))) return true
   }
   return false
 }
 
+function isIpv6(host) {
+  if (!host || host.length > 39 || !/^[0-9A-Fa-f:]+$/.test(host)) return false
+  var pieces = host.split(":")
+  if (pieces.length < 3 || pieces.length > 8) return false
+  for (var i = 0; i < pieces.length; i++) if (pieces[i].length > 4) return false
+  return true
+}
+
+function isLoopback(host, ipv6) {
+  if (String(host || "").toLowerCase() === "localhost") return true
+  if (!ipv6) return false
+  var text = String(host || "").toLowerCase()
+  return text === "::1" || text === "0:0:0:0:0:0:0:1"
+}
+
 function splitHostPort(authority) {
+  if (authority.charAt(0) === "[") {
+    var end = authority.indexOf("]")
+    if (end < 2) return null
+    var host = authority.slice(1, end)
+    if (!isIpv6(host)) return null
+    var rest = authority.slice(end + 1)
+    if (!rest) return { host: host, port: "", ipv6: true }
+    if (rest.charAt(0) !== ":" || !isPort(rest.slice(1))) return null
+    return { host: host, port: rest.slice(1), ipv6: true }
+  }
   var colon = authority.lastIndexOf(":")
   if (colon < 0) return { host: authority, port: "" }
   if (authority.indexOf(":") !== colon) return null
@@ -949,7 +993,7 @@ function splitHostPort(authority) {
 }
 
 // A host with no scheme: a domain, an IPv4 address, an IDN such as münchen.de,
-// or host:port. localhost is http [D]. Every other bare host is https.
+// or host:port. localhost and [::1] are http [D]. Every other bare host is https.
 // Paths (~/, /, ./) and anything that already has a scheme stay as written.
 // RootSearch.js repeats these rules. core modules cannot import each other.
 function bareWebUrl(target) {
@@ -965,9 +1009,12 @@ function bareWebUrl(target) {
   if (!authority) return ""
   var split = splitHostPort(authority)
   if (!split || !split.host) return ""
-  if (!isIpv4(split.host) && !isDomain(split.host)) return ""
-  var scheme = split.host.toLowerCase() === "localhost" ? "http" : "https"
-  return scheme + "://" + split.host + (split.port ? ":" + split.port : "") + tail
+  if (split.ipv6) {
+    if (!isIpv6(split.host)) return ""
+  } else if (!isIpv4(split.host) && !isDomain(split.host)) return ""
+  var scheme = isLoopback(split.host, split.ipv6) ? "http" : "https"
+  var hostText = split.ipv6 ? "[" + split.host + "]" : split.host
+  return scheme + "://" + hostText + (split.port ? ":" + split.port : "") + tail
 }
 
 function refusedLink(url) {
@@ -1014,6 +1061,17 @@ function faviconFor(link) {
   return "https://icons.duckduckgo.com/ip3/" + host + ".ico"
 }
 
+function clearQuicklinkFrecency(items, id) {
+  var key = "quicklink:" + String(id || "")
+  var next = {}
+  var source = items && typeof items === "object" ? items : {}
+  for (var name in source) {
+    if (name === key) continue
+    next[name] = source[name]
+  }
+  return next
+}
+
 function clearQuicklinkSettings(commands, id) {
   var key = "quicklink:" + String(id || "")
   var next = {}
@@ -1037,7 +1095,7 @@ function normalizeArguments(parsed, values) {
     if (!text) {
       if (arg.defaultValue) out[arg.name] = arg.defaultValue
       else if (arg.required) return { error: arg.name + " is required", values: out }
-      out[arg.name] = arg.defaultValue || ""
+      else out[arg.name] = ""
     } else out[arg.name] = text
   }
   return { error: "", values: out }
@@ -1105,8 +1163,10 @@ if (typeof module !== "undefined") {
     parseLink: parseLink,
     expand: expand,
     openArgv: openArgv,
+    bareWebUrl: bareWebUrl,
     refusedLink: refusedLink,
     clearQuicklinkSettings: clearQuicklinkSettings,
+    clearQuicklinkFrecency: clearQuicklinkFrecency,
     normalizeArguments: normalizeArguments,
     installedApps: installedApps,
     openWithChoices: openWithChoices,

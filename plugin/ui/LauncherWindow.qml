@@ -129,6 +129,7 @@ OverlayWindow {
   }
 
   function popToRoot() {
+    window.openWithListDismissed = false
     window.stack = [{ kind: "root", title: "oma-cast", query: "" }]
     window.query = ""
     window.rebuild(true)
@@ -148,6 +149,7 @@ OverlayWindow {
   }
 
   function push(next) {
+    window.openWithListDismissed = false
     var saved = window.stack.slice()
     saved[saved.length - 1] = Object.assign({}, window.view, { query: window.query, selectedIndex: window.selectedIndex })
     window.stack = saved.concat([next])
@@ -156,6 +158,7 @@ OverlayWindow {
   }
 
   function pop() {
+    window.openWithListDismissed = false
     if (window.atRoot) return
     var next = window.stack.slice(0, -1)
     var top = next[next.length - 1]

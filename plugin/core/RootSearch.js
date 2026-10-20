@@ -246,10 +246,13 @@ function submenuSections(candidates, menuId, query, ctx, deps) {
 }
 
 // Keep in step with Quicklinks.bareWebUrl. core modules cannot import each other.
+// [D] These last labels are file extensions, not TLDs. Keep in step with Quicklinks.js.
+var FILE_EXT = { json: true, md: true, js: true, jsx: true, ts: true, tsx: true, txt: true, pdf: true, png: true, jpg: true, jpeg: true, gif: true, svg: true, html: true, css: true, xml: true }
+
 function isPort(text) {
   if (!/^\d{1,5}$/.test(text)) return false
   var n = parseInt(text, 10)
-  return n >= 0 && n <= 65535
+  return n >= 1 && n <= 65535
 }
 
 function isIpv4(host) {
@@ -262,11 +265,20 @@ function isIpv4(host) {
   return true
 }
 
+function isForbiddenHostChar(code) {
+  if (code === 0x200B || code === 0x200C || code === 0x200D || code === 0xFEFF || code === 0x2060 || code === 0x180E) return true
+  if (code === 0x200E || code === 0x200F) return true
+  if (code >= 0x202A && code <= 0x202E) return true
+  if (code >= 0x2066 && code <= 0x2069) return true
+  return false
+}
+
 function isHostLabel(label) {
   if (!label || label.length > 63) return false
   if (label.charAt(0) === "-" || label.charAt(label.length - 1) === "-") return false
   for (var i = 0; i < label.length; i++) {
     var code = label.charCodeAt(i)
+    if (isForbiddenHostChar(code)) return false
     if (code > 127) continue
     if (!/[A-Za-z0-9-]/.test(label.charAt(i))) return false
   }
@@ -279,13 +291,39 @@ function isDomain(host) {
   if (labels.length < 2) return false
   for (var i = 0; i < labels.length; i++) if (!isHostLabel(labels[i])) return false
   var last = labels[labels.length - 1]
+  if (FILE_EXT[last.toLowerCase()]) return false
   for (var c = 0; c < last.length; c++) {
     if (last.charCodeAt(c) > 127 || /[A-Za-z]/.test(last.charAt(c))) return true
   }
   return false
 }
 
+function isIpv6(host) {
+  if (!host || host.length > 39 || !/^[0-9A-Fa-f:]+$/.test(host)) return false
+  var pieces = host.split(":")
+  if (pieces.length < 3 || pieces.length > 8) return false
+  for (var i = 0; i < pieces.length; i++) if (pieces[i].length > 4) return false
+  return true
+}
+
+function isLoopback(host, ipv6) {
+  if (String(host || "").toLowerCase() === "localhost") return true
+  if (!ipv6) return false
+  var text = String(host || "").toLowerCase()
+  return text === "::1" || text === "0:0:0:0:0:0:0:1"
+}
+
 function splitHostPort(authority) {
+  if (authority.charAt(0) === "[") {
+    var end = authority.indexOf("]")
+    if (end < 2) return null
+    var host = authority.slice(1, end)
+    if (!isIpv6(host)) return null
+    var rest = authority.slice(end + 1)
+    if (!rest) return { host: host, port: "", ipv6: true }
+    if (rest.charAt(0) !== ":" || !isPort(rest.slice(1))) return null
+    return { host: host, port: rest.slice(1), ipv6: true }
+  }
   var colon = authority.lastIndexOf(":")
   if (colon < 0) return { host: authority, port: "" }
   if (authority.indexOf(":") !== colon) return null
@@ -307,9 +345,12 @@ function bareWebUrl(target) {
   if (!authority) return ""
   var split = splitHostPort(authority)
   if (!split || !split.host) return ""
-  if (!isIpv4(split.host) && !isDomain(split.host)) return ""
-  var scheme = split.host.toLowerCase() === "localhost" ? "http" : "https"
-  return scheme + "://" + split.host + (split.port ? ":" + split.port : "") + tail
+  if (split.ipv6) {
+    if (!isIpv6(split.host)) return ""
+  } else if (!isIpv4(split.host) && !isDomain(split.host)) return ""
+  var scheme = isLoopback(split.host, split.ipv6) ? "http" : "https"
+  var hostText = split.ipv6 ? "[" + split.host + "]" : split.host
+  return scheme + "://" + hostText + (split.port ? ":" + split.port : "") + tail
 }
 
 // A query with no spaces that is a bare host, host:port, mailto:, tel:,
@@ -456,6 +497,7 @@ if (typeof module !== "undefined") {
     submenuSections: submenuSections,
     quicklinkSections: quicklinkSections,
     isUrlQuery: isUrlQuery,
+    bareWebUrl: bareWebUrl,
     normalizedUrl: normalizedUrl,
     actionsFor: actionsFor,
     reorderFavorites: reorderFavorites,

@@ -633,6 +633,11 @@ Item {
           })
           backend.emit("settings.commandSettingsChanged", { commandId: "quicklink:" + id })
         }
+        if (frecencyStore.loaded) {
+          frecencyStore.update(function(doc) {
+            doc.items = Quicklinks.clearQuicklinkFrecency(doc.items, id)
+          })
+        }
         backend.emit("quicklinks.updated", { id: id })
         return null
       },
