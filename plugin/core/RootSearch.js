@@ -184,7 +184,7 @@ function fallbackRows(query) {
 
 // Sections for the root view (SPEC §7.2):
 //   empty query: Favorites, Suggestions, Commands, Applications
-//   query:       Results, Use "<q>" with…
+//   query:       Results, a URL section when the query is one, Use "<q>" with…
 function rootSections(candidates, query, ctx, deps) {
   var q = String(query || "").trim()
   var decorated = []
@@ -198,8 +198,8 @@ function rootSections(candidates, query, ctx, deps) {
     var searchable = decorated.filter(function(c) { return c.rootSearch.when !== "empty" })
     var results = deps.Ranker.rank(searchable, q, opts)
     var sections = []
-    if (isUrlQuery(q)) sections.push(urlSection(q))
     if (results.length > 0) sections.push({ id: "results", title: "Results", rows: results })
+    if (isUrlQuery(q)) sections.push(urlSection(q))
     sections.push({ id: "fallback-commands", title: "Use “" + q + "” with…", rows: fallbackRows(q) })
     return sections
   }
@@ -245,12 +245,12 @@ function submenuSections(candidates, menuId, query, ctx, deps) {
   return ranked.length ? [{ id: "results", title: "Results", rows: ranked }] : []
 }
 
-// A query with no spaces that is a scheme URL or a www host (SPEC §7.5).
+// A query with no spaces that is scheme://rest or www plus a host (SPEC §7.5).
 function isUrlQuery(query) {
   var q = String(query || "").trim()
   if (!q || /\s/.test(q)) return false
-  if (/^www\./i.test(q)) return true
-  return /^[a-z][a-z0-9+.-]*:[^\s]*$/i.test(q)
+  if (/^www\.[^\s./]+/i.test(q)) return true
+  return /^[a-z][a-z0-9+.-]*:\/\/\S+$/i.test(q)
 }
 
 function normalizedUrl(query) {

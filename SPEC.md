@@ -429,7 +429,7 @@ Full verbatim catalog: `reference/04-frontend-features.md §1 + Appendix A/B/C`.
 | **Calculator** (`calculator`) | inline result; Calculator History; Color (inline preview); Weather (inline); Flight (skip) | P0 (calc), P1 (color, history), P2 (weather) | `fend-core` crate in the host (units, currencies, dates). Currency rates from ECB / frankfurter.app, cached daily. Settings: `remToPxRate`=16, `workHoursPerDay`=8, color detection, weather toggle. Weather: Open-Meteo + GeoClue2. History cap 4096. Copy result = Enter, Paste = Ctrl+Enter |
 | **Clipboard History** (`clipboard-history`) | Clipboard History (list + detail, filter dropdown All/Text/Images/Files/Links/Colors), Paste Sequentially, Reset Paste Sequence | P0 | §5.3 + §8.2 |
 | **Snippets** (`snippets`) | Create, Search, Import, Export Snippets | P0 (CRUD + search/paste), P1 (expansion) | §5.4 + §8.3 |
-| **Quicklinks** (`quicklinks`) | Create, Search, Import, Export; dynamic per quicklink with arguments; Create Quicklink from URL query | P0 | §8.4. Open via `xdg-open` or `gio launch <open_with> <url>` |
+| **Quicklinks** (`quicklinks`) | Create, Search, Import, Export; dynamic per quicklink with arguments; Create Quicklink from URL query | P0 | §8.4. Open via `xdg-open`, or `uwsm-app -- gtk-launch <desktop-id> <url>` |
 | **Script Commands** (`script-commands`) | Search, Create (from template), Reload; dynamic per script | P0 | §9.9; identical to Raycast |
 | **Web Searches / URL** (`web-searches`, `urls`) | Google, DuckDuckGo, Bing (fallbacks); Open in Browser | P0 | `xdg-open` |
 | **System Actions** (`system`) | Lock Screen, Log Out, Sleep, Hibernate, Restart, Shut Down (confirm alert), Sleep Displays, Show Screen Saver, Empty Trash (confirm), Open Trash, Eject All Disks, Toggle System Appearance, Toggle Mute, Volume Up/Down, Set Volume 0/25/50/75/100 %, Set Volume…, Play/Pause, Next/Previous Track, Toggle Mic Mute, Set Sound Output/Input Device, Volume Mixer, Manage Wi-Fi, Toggle Wi-Fi, Toggle Airplane Mode, Manage Bluetooth Devices, Toggle Bluetooth, Toggle Night Light, Toggle Energy Saver (power-saver profile), Quit All Apps (confirm), Quit All Except Frontmost, Show Desktop, Toggle Hidden Files | P0 (power, volume, media, appearance), P1 (rest) | logind (`LockSession`/`Suspend`/`Hibernate`/`PowerOff`/`Reboot`/`TerminateSession`), DPMS via adapter, PipeWire `wpctl` (`@DEFAULT_AUDIO_SINK@`), per-app volume via pw-dump nodes, MPRIS (`playerctl` semantics; pick the most recently active player), NetworkManager, rfkill, BlueZ (`bluer`), power-profiles-daemon, appearance via gsettings `color-scheme` / `plasma-apply-colorscheme` / Hyprland user hook script, night light via gsettings / KWin NightLight / `hyprsunset`, trash via the freedesktop Trash spec, UDisks2 for eject |
@@ -490,11 +490,14 @@ Grammar: `{keyword opt="v" opt2='v' | modifier | modifier}`. Quotes accepted: `"
 - When a snippet has `{argument}`s, expansion opens a small argument form (or the launcher with argument pills) before inserting.
 
 ### 8.4 Quicklinks [O]
-- Fields: name, link (a template), icon (favicon fetched or an app icon), open with (desktop id), tags, open count.
-- Arguments come from placeholders and are percent-encoded unless `| raw` [I].
-- Shown in root search. Arguments open a pushed form [D]. Inline pills are still open. Can be a fallback command.
+- Fields: name, link (a template), icon (an app icon name), open with (desktop id), tags, open count.
+- Favicons are off unless `config.json` sets `quicklinkFavicons` [D]. When it is on, an `https` link with no `iconName` shows `https://icons.duckduckgo.com/ip3/<host>.ico`. Save and import reject an `iconName` that contains `://`.
+- Arguments come from placeholders and are percent-encoded unless `| raw` [I]. An option title expands to that option's value.
+- Shown in root search after matching results. A URL query is `scheme://…` with a non-empty rest, or `www.` plus a host. Arguments open a pushed form [D]. Inline pills are still open. Can be a fallback command.
+- Open runs `xdg-open`, or `uwsm-app -- gtk-launch <desktop-id> <url>`.
+- Date placeholders use the local clock. A `locale` uses `Qt.formatDateTime` when the shell provides Qt.
 - Settings: Show Link Previews, Pass Selected Text as Argument.
-- **Import/Export** JSON: `[{name, link, iconName?, openWith?}]` [I, Raycast's documented fields]. A duplicate is the same name and the same link [D].
+- **Import/Export** JSON: `[{name, link, iconName?, openWith?}]` [I, Raycast's documented fields]. A duplicate is the same name and the same link [D]. Migration `quicklinks` keeps items that already have a name and a link, and drops the rest.
 
 ### 8.5 Window management maths [O command list, I geometry]
 - Work area = monitor geometry minus reserved space (Hyprland `monitors -j` `reserved`; KDE/X11 `_NET_WORKAREA`).

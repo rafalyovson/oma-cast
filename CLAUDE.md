@@ -109,7 +109,7 @@ Renamed **raylinux → oma-launcher → oma-cast** on 2026-10-19 (plugin `typecr
 Works:
 - **Root search** ported from ref 02 §4.2–4.6 (`core/Ranker.js`, `core/Frecency.js`, golden tests). Sections (`core/RootSearch.js`):
   - empty root: Favorites, Suggestions (frecency > 1, top 6), Commands, Applications
-  - query: Results, then `Use "<q>" with…` (Google, DuckDuckGo fallbacks)
+  - query: Results, a URL section when the query is `scheme://…` or `www.` plus a host, then `Use "<q>" with…` (Google, DuckDuckGo fallbacks)
 - **Providers:** apps from `shell.appLibrary`, the whole Omarchy menu (about 400 items, with breadcrumbs, guards, ✓ state and font/power-profile provider rows), and the built-in "Omarchy Menu".
 - **Ranking state:** frecency (+100 per launch, 10-day half-life) and learned search terms in `db/frecency.json`. Aliases (exact → top; duplicates rejected), favourites (Ctrl+Shift+F, reorder Ctrl+Alt+↑↓) and disabled commands live in `db/settings.json` `commands`.
 - **Navigation:** pushed Omarchy submenus (search within them), the alias editor, back with Esc / Ctrl+[ / Backspace on an empty query / the header arrow, and Shift+Esc to pop to root.
@@ -122,13 +122,13 @@ Works:
   - A launch from root clears the query [I].
   - A row is selected on hover only after a real pointer move (Omarchy's PointerMoveGate).
 - **Latency:** show → mapped in 37–44 ms, hide in 9–25 ms (`tests/smoke.sh`).
-- **Tests:** 80 passing unit tests, 1 skipped (`node --test tests/*.test.js`). The skip is the installed Omarchy menu parse, which needs the live shell.
-- **Quicklinks** (`db/quicklinks.json`, migration `quicklinks`): Create, Search, Edit, Delete, Import, Export. Each saved link is a root-search row (`type: quicklink`, priority 3) with a favicon hint for `https` links (`icons.duckduckgo.com`). A URL query adds Open in Browser and Create Quicklink. Open runs `xdg-open`, or `gio launch <desktop-id> <url>`. Arguments are a pushed form (Ctrl+Enter saves, Enter on the last field submits). Placeholders cover argument, legacy `{word}` / `{word:default}`, clipboard, selection, uuid, and date/time/datetime/day, percent-encoded unless `| raw`. Import JSON is `[{name, link, iconName?, openWith?}]`. A duplicate is the same name and the same link [D].
+- **Tests:** 84 passing unit tests, 1 skipped (`TZ=UTC node --test tests/*.test.js`). The skip is the installed Omarchy menu parse, which needs the live shell.
+- **Quicklinks** (`db/quicklinks.json`, migration `quicklinks`): Create, Search, Edit, Delete, Import, Export. Each saved link is a root-search row (`type: quicklink`, priority 3). Favicons stay off unless `config.json` `quicklinkFavicons` is true; a remote `iconName` is rejected. A URL query adds Open in Browser and Create Quicklink after the matching results. Open runs `xdg-open`, or `uwsm-app -- gtk-launch <desktop-id> <url>`. Arguments are a pushed form (Ctrl+Enter saves, Enter on the last field submits). An option title expands to its value. Placeholders cover argument, legacy `{word}` / `{word:default}`, clipboard, selection, uuid, and date/time/datetime/day from the local clock (`Qt.formatDateTime` when a locale is set and Qt is present), percent-encoded unless `| raw`. Import JSON is `[{name, link, iconName?, openWith?}]`. A duplicate is the same name and the same link [D]. The migration keeps items that already have a name and a link. The launcher stays ready if `quicklinks.json` does not load.
 
 Stubbed / not yet:
 - Keystroke buffering before the surface maps. Keys sent within ~40 ms of the hotkey go to the window underneath.
 - Vim navigation bindings, Ctrl+P dropdown, Ctrl+T, Ctrl+Shift+K, inline argument pills, alerts.
-- Quicklink gaps: inline argument pills (the form stands in), tags, pins, open count, link previews, clipboard history so `{clipboard offset=N}` only sees the text copied before show, selected text (`{selection}` is always empty), `{snippet}` and `{calculator}` (refused until those features exist). A disabled quicklink is re-enabled by editing `settings.json`. Favicons are a display URL. If the image fails, the link glyph stays.
+- Quicklink gaps: inline argument pills (the form stands in), tags, pins, open count, link previews, clipboard history so `{clipboard offset=N}` only sees the text copied before show, selected text (`{selection}` is always empty), `{snippet}` and `{calculator}` (refused until those features exist). A disabled quicklink is re-enabled by editing `settings.json`. A favicon is a display URL only when `quicklinkFavicons` is on. If the image fails, the link glyph stays.
 - No settings window, so you can't re-enable a disabled command except by editing `~/.local/share/oma-cast/db/settings.json` (delete its `enabled: false`). That's Phase 2.
 - No deep links (`oma-cast://`); Phase 2 or 9.
 

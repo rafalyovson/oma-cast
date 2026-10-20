@@ -30,7 +30,7 @@ Item {
 
   property var config: Schema.withConfigDefaults(null)
   property bool directoriesReady: false
-  readonly property bool ready: directoriesReady && settingsStore.loaded && frecencyStore.loaded && quicklinksStore.loaded
+  readonly property bool ready: directoriesReady && settingsStore.loaded && frecencyStore.loaded
   // Text copied before the launcher was shown. [D] No clipboard history, so offset > 0 stays empty.
   property string clipboardText: ""
 
@@ -85,7 +85,7 @@ Item {
     for (var b = 0; b < RootSearch.BUILTINS.length; b++) next.push(RootSearch.builtinCandidate(RootSearch.BUILTINS[b]))
     if (quicklinksStore.loaded) {
       var links = Quicklinks.list(quicklinksStore.doc)
-      for (var q = 0; q < links.length; q++) next.push(Quicklinks.toCandidate(links[q]))
+      for (var q = 0; q < links.length; q++) next.push(backend.quicklinkCandidate(links[q]))
     }
     var byId = ({})
     for (var j = 0; j < next.length; j++) byId[next[j].id] = next[j]
@@ -158,13 +158,8 @@ Item {
     return candidate.kind === "omarchy-link" ? candidate.target : candidate.menuId
   }
 
-  function timeZone() {
-    try {
-      var zone = Intl.DateTimeFormat().resolvedOptions().timeZone
-      return zone || "UTC"
-    } catch (e) {
-      return "UTC"
-    }
+  function quicklinkCandidate(item) {
+    return Quicklinks.toCandidate(item, { favicons: backend.config.quicklinkFavicons === true })
   }
 
   function quicklinkById(id) {
@@ -219,7 +214,6 @@ Item {
     }
     var expanded = Quicklinks.expand(item.link, {
       now: Date.now(),
-      timeZone: backend.timeZone(),
       arguments: values,
       clipboard: backend.clipboardText ? [backend.clipboardText] : [],
       selection: "",
@@ -545,7 +539,7 @@ Item {
         if (!candidate) {
           var item = backend.quicklinkById(id)
           if (!item) throw new Error("Quicklink not found")
-          candidate = Quicklinks.toCandidate(item)
+          candidate = backend.quicklinkCandidate(item)
         }
         var supplied = data && (data.values || data.arguments)
         var hasArgs = !!supplied

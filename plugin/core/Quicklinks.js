@@ -2,7 +2,7 @@
 // import/export, and the root-search row for one saved link.
 // [D] A repeated import is a duplicate only when both the name and the link match.
 // [D] Substituted values are percent-encoded unless the placeholder says raw.
-// [I] Date patterns cover the Unicode tokens the defaults and the tests use.
+// [I] Date patterns use local Date getters. A locale uses Qt.formatDateTime when Qt is present.
 
 var KEYWORDS = ["browser-tab", "calculator", "clipboard", "datetime", "argument", "selection", "snippet", "cursor", "date", "time", "uuid", "day", "ai"]
 var REFUSED = { cursor: true, "browser-tab": true, snippet: true, calculator: true, ai: true }
@@ -51,13 +51,15 @@ function buildItem(input, id, now) {
   if (!link) return { error: "Quicklink needs a link" }
   var parsed = parseLink(link)
   if (parsed.error) return { error: parsed.error }
+  var iconName = String(input.iconName || "").trim()
+  if (iconName.indexOf("://") >= 0) return { error: "Quicklink iconName cannot be a remote URL" }
   return {
     error: "",
     item: {
       id: id,
       name: name,
       link: link,
-      iconName: String(input.iconName || "").trim(),
+      iconName: iconName,
       openWith: String(input.openWith || "").trim(),
       createdAt: now,
       updatedAt: now
@@ -390,106 +392,82 @@ function clipboardAt(clipboard, offset) {
   return clipboard == null ? "" : String(clipboard)
 }
 
-function zonedParts(ms, timeZone) {
-  var format = new Intl.DateTimeFormat("en-US", {
-    timeZone: timeZone || "UTC",
-    hourCycle: "h23",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    weekday: "long"
-  })
-  var map = {}
-  format.formatToParts(new Date(ms)).forEach(function(part) { if (part.type !== "literal") map[part.type] = part.value })
+var MONTHS_SHORT = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+var MONTHS_LONG = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
+var MONTHS_SHORT_FR = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."]
+var WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+var WEEKDAYS_SHORT = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+
+function localParts(ms) {
+  var date = new Date(ms)
   return {
-    year: Number(map.year),
-    month: Number(map.month),
-    day: Number(map.day),
-    hour: Number(map.hour === "24" ? "0" : map.hour),
-    minute: Number(map.minute),
-    second: Number(map.second),
-    weekday: map.weekday || ""
+    year: date.getFullYear(),
+    month: date.getMonth() + 1,
+    day: date.getDate(),
+    hour: date.getHours(),
+    minute: date.getMinutes(),
+    second: date.getSeconds(),
+    weekday: date.getDay()
   }
 }
 
-function civilToUtc(parts, timeZone) {
-  var guess = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second)
-  var got = zonedParts(guess, timeZone)
-  var asUtc = Date.UTC(got.year, got.month - 1, got.day, got.hour, got.minute, got.second)
-  return guess - (asUtc - guess)
-}
-
-function applyOffset(ms, offset, timeZone) {
+function applyOffset(ms, offset) {
   if (!offset || !String(offset).trim()) return { ok: true, ms: ms }
   if (!validOffset(offset)) return { ok: false, ms: ms }
-  var zone = timeZone || "UTC"
-  var parts = zonedParts(ms, zone)
+  var date = new Date(ms)
   var tokens = String(offset).trim().split(/\s+/)
   for (var i = 0; i < tokens.length; i++) {
     var match = /^([+-])(\d+)([mhdMy])$/.exec(tokens[i])
     var amount = (match[1] === "-" ? -1 : 1) * parseInt(match[2], 10)
     var unit = match[3]
-    if (unit === "m") parts.minute += amount
-    else if (unit === "h") parts.hour += amount
-    else if (unit === "d") parts.day += amount
-    else if (unit === "M") parts.month += amount
-    else if (unit === "y") parts.year += amount
+    if (unit === "m") date.setMinutes(date.getMinutes() + amount)
+    else if (unit === "h") date.setHours(date.getHours() + amount)
+    else if (unit === "d") date.setDate(date.getDate() + amount)
+    else if (unit === "M") date.setMonth(date.getMonth() + amount)
+    else if (unit === "y") date.setFullYear(date.getFullYear() + amount)
   }
-  var spilled = new Date(Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second))
-  return {
-    ok: true,
-    ms: civilToUtc({
-      year: spilled.getUTCFullYear(),
-      month: spilled.getUTCMonth() + 1,
-      day: spilled.getUTCDate(),
-      hour: spilled.getUTCHours(),
-      minute: spilled.getUTCMinutes(),
-      second: spilled.getUTCSeconds()
-    }, zone)
+  return { ok: true, ms: date.getTime() }
+}
+
+function frenchLocale(locale) {
+  return String(locale || "").toLowerCase().indexOf("fr") === 0
+}
+
+function formatWithQt(ms, pattern, locale) {
+  if (!locale || typeof Qt === "undefined" || !Qt.locale || !Qt.formatDateTime) return ""
+  var formatted = Qt.formatDateTime(new Date(ms), pattern, Qt.locale(String(locale).replace(/-/g, "_")))
+  return formatted ? String(formatted) : ""
+}
+
+function weekdayName(ms, locale, width) {
+  if (locale) {
+    var formatted = formatWithQt(ms, width === "short" ? "ddd" : "dddd", locale)
+    if (formatted) return formatted
   }
+  var day = localParts(ms).weekday
+  return width === "short" ? WEEKDAYS_SHORT[day] : WEEKDAYS[day]
 }
 
-function monthName(ms, timeZone, locale, width) {
-  return new Intl.DateTimeFormat(locale || "en-GB", { timeZone: timeZone || "UTC", month: width }).format(new Date(ms))
+function defaultDate(ms, locale) {
+  if (locale) {
+    var formatted = formatWithQt(ms, "d MMM yyyy", locale)
+    if (formatted) return formatted
+  }
+  var parts = localParts(ms)
+  var months = frenchLocale(locale) ? MONTHS_SHORT_FR : MONTHS_SHORT
+  return parts.day + " " + months[parts.month - 1] + " " + parts.year
 }
 
-function weekdayName(ms, timeZone, locale, width) {
-  return new Intl.DateTimeFormat(locale || "en-GB", { timeZone: timeZone || "UTC", weekday: width }).format(new Date(ms))
+function defaultTime(ms) {
+  var parts = localParts(ms)
+  var hour = parts.hour % 12
+  if (hour === 0) hour = 12
+  var minute = parts.minute < 10 ? "0" + parts.minute : String(parts.minute)
+  return hour + ":" + minute + " " + (parts.hour < 12 ? "am" : "pm")
 }
 
-function defaultDate(ms, timeZone, locale) {
-  var format = new Intl.DateTimeFormat(locale || "en-GB", {
-    timeZone: timeZone || "UTC", day: "numeric", month: "short", year: "numeric"
-  })
-  var out = ""
-  format.formatToParts(new Date(ms)).forEach(function(part) {
-    if (part.type === "day" || part.type === "month" || part.type === "year") out += part.value
-    else if (part.type === "literal") out += " "
-  })
-  return out.replace(/\s+/g, " ").trim()
-}
-
-function defaultTime(ms, timeZone) {
-  var format = new Intl.DateTimeFormat("en-US", {
-    timeZone: timeZone || "UTC", hour: "numeric", minute: "2-digit", hourCycle: "h12"
-  })
-  var hour = ""
-  var minute = ""
-  var period = ""
-  format.formatToParts(new Date(ms)).forEach(function(part) {
-    if (part.type === "hour") hour = part.value
-    if (part.type === "minute") minute = part.value
-    if (part.type === "dayPeriod") period = part.value.toLowerCase()
-  })
-  return hour + ":" + minute + " " + period
-}
-
-function formatPattern(ms, pattern, timeZone, locale) {
-  var zone = timeZone || "UTC"
-  var parts = zonedParts(ms, zone)
+function formatPattern(ms, pattern) {
+  var parts = localParts(ms)
   var hour12 = parts.hour % 12
   if (hour12 === 0) hour12 = 12
   var pad = function(n, width) { var s = String(n); while (s.length < width) s = "0" + s; return s }
@@ -512,14 +490,14 @@ function formatPattern(ms, pattern, timeZone, locale) {
     if (matched === "yyyy") out += pad(parts.year, 4)
     else if (matched === "yy") out += pad(parts.year % 100, 2)
     else if (matched === "y") out += String(parts.year)
-    else if (matched === "MMMM") out += monthName(ms, zone, locale, "long")
-    else if (matched === "MMM") out += monthName(ms, zone, locale, "short")
+    else if (matched === "MMMM") out += MONTHS_LONG[parts.month - 1]
+    else if (matched === "MMM") out += MONTHS_SHORT[parts.month - 1]
     else if (matched === "MM") out += pad(parts.month, 2)
     else if (matched === "M") out += String(parts.month)
     else if (matched === "dd") out += pad(parts.day, 2)
     else if (matched === "d") out += String(parts.day)
-    else if (matched === "EEEE") out += weekdayName(ms, zone, locale, "long")
-    else if (matched === "E") out += weekdayName(ms, zone, locale, "short")
+    else if (matched === "EEEE") out += WEEKDAYS[parts.weekday]
+    else if (matched === "E") out += WEEKDAYS_SHORT[parts.weekday]
     else if (matched === "HH") out += pad(parts.hour, 2)
     else if (matched === "H") out += String(parts.hour)
     else if (matched === "hh") out += pad(hour12, 2)
@@ -535,22 +513,30 @@ function formatPattern(ms, pattern, timeZone, locale) {
 }
 
 function dateText(kind, attrs, ctx) {
-  var zone = ctx.timeZone || "UTC"
-  var shifted = applyOffset(typeof ctx.now === "number" ? ctx.now : Date.now(), attrs.offset, zone)
+  var shifted = applyOffset(typeof ctx.now === "number" ? ctx.now : Date.now(), attrs.offset)
   if (!shifted.ok) return { ok: false, text: "", error: "Bad date offset" }
   var ms = shifted.ms
-  if (kind === "day") return { ok: true, text: weekdayName(ms, zone, attrs.locale || "en-GB", "long"), error: "" }
-  if (attrs.format) return { ok: true, text: formatPattern(ms, attrs.format, zone, attrs.locale), error: "" }
-  if (kind === "time") return { ok: true, text: defaultTime(ms, zone), error: "" }
-  if (kind === "datetime") return { ok: true, text: defaultDate(ms, zone, attrs.locale) + " at " + defaultTime(ms, zone), error: "" }
-  return { ok: true, text: defaultDate(ms, zone, attrs.locale), error: "" }
+  var locale = attrs.locale || ""
+  if (kind === "day") return { ok: true, text: weekdayName(ms, locale, "long"), error: "" }
+  if (attrs.format) return { ok: true, text: formatPattern(ms, attrs.format), error: "" }
+  if (kind === "time") return { ok: true, text: defaultTime(ms), error: "" }
+  if (kind === "datetime") return { ok: true, text: defaultDate(ms, locale) + " at " + defaultTime(ms), error: "" }
+  return { ok: true, text: defaultDate(ms, locale), error: "" }
+}
+
+function optionValue(placeholder, text) {
+  var options = placeholder.options || []
+  for (var i = 0; i < options.length; i++) {
+    if (options[i] && options[i].title === text) return String(options[i].value)
+  }
+  return text
 }
 
 function resolvePlaceholder(placeholder, ctx) {
   if (placeholder.kind === "argument") {
     var provided = ctx.arguments && ctx.arguments[placeholder.name]
     var text = provided == null || provided === "" ? (placeholder.defaultValue || "") : provided
-    return { ok: true, text: String(text), error: "" }
+    return { ok: true, text: optionValue(placeholder, String(text)), error: "" }
   }
   if (placeholder.kind === "clipboard") {
     var offset = parseInt(placeholder.attrs.offset || "0", 10)
@@ -602,7 +588,7 @@ function expandHome(url, home) {
 function openArgv(openWith, url, home) {
   var target = expandHome(url, home)
   var app = String(openWith || "").trim()
-  if (app) return ["gio", "launch", app, target]
+  if (app) return ["uwsm-app", "--", "gtk-launch", app, target]
   return ["xdg-open", target]
 }
 
@@ -613,9 +599,10 @@ function faviconFor(link) {
   return "https://icons.duckduckgo.com/ip3/" + match[1].replace(/:\d+$/, "") + ".ico"
 }
 
-function toCandidate(item) {
+function toCandidate(item, opts) {
   var stored = String(item.iconName || "")
-  var iconName = stored || faviconFor(item.link)
+  if (stored.indexOf("://") >= 0) stored = ""
+  var iconName = stored || (opts && opts.favicons ? faviconFor(item.link) : "")
   var remote = iconName.indexOf("://") >= 0
   return {
     id: "quicklink:" + item.id,

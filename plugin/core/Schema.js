@@ -47,7 +47,34 @@ var quicklinksMigrations = [
     version: 1,
     name: "quicklinks",
     up: function(doc) {
-      doc.items = []
+      var raw = Array.isArray(doc.items) ? doc.items : []
+      var kept = []
+      var seen = {}
+      for (var i = 0; i < raw.length; i++) {
+        var item = raw[i]
+        if (!item || typeof item !== "object" || Array.isArray(item)) continue
+        var name = String(item.name == null ? "" : item.name).trim()
+        var link = String(item.link == null ? "" : item.link).trim()
+        if (!name || !link) continue
+        var iconName = String(item.iconName == null ? "" : item.iconName).trim()
+        if (iconName.indexOf("://") >= 0) iconName = ""
+        var id = String(item.id == null ? "" : item.id).trim()
+        if (!id || seen[id]) {
+          id = "ql-kept-" + i.toString(36)
+          while (seen[id]) id += "x"
+        }
+        seen[id] = true
+        kept.push({
+          id: id,
+          name: name,
+          link: link,
+          iconName: iconName,
+          openWith: String(item.openWith == null ? "" : item.openWith).trim(),
+          createdAt: typeof item.createdAt === "number" ? item.createdAt : 0,
+          updatedAt: typeof item.updatedAt === "number" ? item.updatedAt : 0
+        })
+      }
+      doc.items = kept
       return doc
     }
   }
@@ -75,7 +102,8 @@ var documents = {
 // missing ones fall back to these defaults.
 var configDefaults = {
   logLevel: "info",                    // trace | debug | info | warning | error | fatal
-  keepVisibleOnFocusLoss: false        // dev aid (keepMainWindowVisibleOnResignKey)
+  keepVisibleOnFocusLoss: false,       // dev aid (keepMainWindowVisibleOnResignKey)
+  quicklinkFavicons: false             // [D] off: a search does not fetch icons.duckduckgo.com
 }
 
 function withConfigDefaults(value) {
