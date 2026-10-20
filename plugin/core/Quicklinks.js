@@ -125,7 +125,7 @@ function importText(doc, jsonString, ctx) {
   var skipped = 0
   for (var i = 0; i < parsed.length; i++) {
     var row = parsed[i]
-    if (!row || typeof row !== "object") return blankResult(doc, "Quicklink needs a link")
+    if (!row || typeof row !== "object" || Array.isArray(row)) return blankResult(doc, "Import row is invalid")
     var name = String(row.name != null ? row.name : "").trim()
     var link = String(row.link != null ? row.link : "").trim()
     if (!name) return blankResult(doc, "Quicklink needs a name")
@@ -315,6 +315,22 @@ function parsePlaceholder(inner) {
   return { error: "", kind: kw.keyword, modifiers: modifiers, attrs: { format: format, offset: offset, locale: locale } }
 }
 
+function placeholderEnd(text, start) {
+  var quote = ""
+  for (var i = start + 1; i < text.length; i++) {
+    var ch = text.charAt(i)
+    if (quote) {
+      if (ch === "\\" && i + 1 < text.length) { i++; continue }
+      if (ch === quote) quote = ""
+      continue
+    }
+    if (ch === "\n" || ch === "\r") return -1
+    if (isOpenQuote(ch)) { quote = QUOTE_PAIRS[ch]; continue }
+    if (ch === "}") return i
+  }
+  return -1
+}
+
 function scanPlaceholders(link) {
   var text = String(link || "")
   var found = []
@@ -322,13 +338,8 @@ function scanPlaceholders(link) {
   while (i < text.length) {
     var start = text.indexOf("{", i)
     if (start < 0) break
-    var end = start + 1
-    var aborted = false
-    while (end < text.length && text.charAt(end) !== "}") {
-      if (text.charAt(end) === "\n" || text.charAt(end) === "\r") { aborted = true; break }
-      end++
-    }
-    if (aborted || end >= text.length) { i = start + 1; continue }
+    var end = placeholderEnd(text, start)
+    if (end < 0) { i = start + 1; continue }
     found.push({ start: start, end: end + 1, placeholder: parsePlaceholder(text.slice(start + 1, end)) })
     i = end + 1
   }
@@ -559,13 +570,8 @@ function expand(link, ctx) {
     var start = text.indexOf("{", i)
     if (start < 0) { out += text.slice(i); break }
     out += text.slice(i, start)
-    var end = start + 1
-    var aborted = false
-    while (end < text.length && text.charAt(end) !== "}") {
-      if (text.charAt(end) === "\n" || text.charAt(end) === "\r") { aborted = true; break }
-      end++
-    }
-    if (aborted || end >= text.length) { out += "{"; i = start + 1; continue }
+    var end = placeholderEnd(text, start)
+    if (end < 0) { out += "{"; i = start + 1; continue }
     var placeholder = parsePlaceholder(text.slice(start + 1, end))
     if (placeholder.error) return { ok: false, url: "", error: placeholder.error }
     var value = resolvePlaceholder(placeholder, context)
@@ -588,22 +594,38 @@ function expandHome(url, home) {
 function openArgv(openWith, url, home) {
   var target = expandHome(url, home)
   var app = String(openWith || "").trim()
-  if (app) return ["uwsm-app", "--", "gtk-launch", app, target]
-  return ["xdg-open", target]
+  if (app) return ["uwsm-app", "--", "gtk-launch", "--", app, target]
+  return ["xdg-open", "--", target]
 }
 
 function faviconFor(link) {
   var head = String(link || "").split("{")[0].trim()
-  var match = /^https?:\/\/([^\/?#]+)/i.exec(head)
+  var match = /^https:\/\/([^\/?#]+)/i.exec(head)
   if (!match) return ""
-  return "https://icons.duckduckgo.com/ip3/" + match[1].replace(/:\d+$/, "") + ".ico"
+  var host = match[1].replace(/:\d+$/, "")
+  if (!host) return ""
+  return "https://icons.duckduckgo.com/ip3/" + host + ".ico"
+}
+
+function isItem(item) {
+  return !!item && typeof item === "object" && !Array.isArray(item)
+    && typeof item.id === "string" && item.id.trim() !== ""
+    && typeof item.name === "string" && item.name.trim() !== ""
+    && typeof item.link === "string" && item.link.trim() !== ""
+}
+
+function candidateItems(doc) {
+  return list(doc).filter(isItem)
 }
 
 function toCandidate(item, opts) {
-  var stored = String(item.iconName || "")
+  if (!isItem(item)) return null
+  var stored = typeof item.iconName === "string" ? item.iconName.trim() : ""
   if (stored.indexOf("://") >= 0) stored = ""
-  var iconName = stored || (opts && opts.favicons ? faviconFor(item.link) : "")
-  var remote = iconName.indexOf("://") >= 0
+  var hint = opts && opts.favicons ? faviconFor(item.link) : ""
+  if (hint.indexOf("https://") !== 0) hint = ""
+  var iconName = stored || hint
+  var remote = iconName.indexOf("https://") === 0
   return {
     id: "quicklink:" + item.id,
     type: "quicklink",
@@ -647,6 +669,7 @@ if (typeof module !== "undefined") {
     expand: expand,
     openArgv: openArgv,
     toCandidate: toCandidate,
+    candidateItems: candidateItems,
     randomUuid: randomUuid
   }
 }

@@ -31,8 +31,9 @@ Item {
   property var config: Schema.withConfigDefaults(null)
   property bool directoriesReady: false
   readonly property bool ready: directoriesReady && settingsStore.loaded && frecencyStore.loaded
-  // Text copied before the launcher was shown. [D] No clipboard history, so offset > 0 stays empty.
+  // Text from the last {clipboard} read. [D] No clipboard history, so offset > 0 stays empty.
   property string clipboardText: ""
+  property var pendingQuicklink: null
 
   readonly property var registry: Rpc.createRegistry()
   readonly property double startedAt: Date.now()
@@ -45,6 +46,8 @@ Item {
   readonly property bool loading: menuSource.loading
 
   signal notification(string method, var data)
+  // Fired after a clipboard read finishes and the quicklink actually opens.
+  signal quicklinkReady(var outcome)
 
   // ------------------------------------------------------------- dispatch
 
@@ -84,8 +87,11 @@ Item {
     next = next.concat(RootSearch.menuCandidates(menuSource.tree, menuSource.guards, menuSource.providerItems, backend.deps))
     for (var b = 0; b < RootSearch.BUILTINS.length; b++) next.push(RootSearch.builtinCandidate(RootSearch.BUILTINS[b]))
     if (quicklinksStore.loaded) {
-      var links = Quicklinks.list(quicklinksStore.doc)
-      for (var q = 0; q < links.length; q++) next.push(backend.quicklinkCandidate(links[q]))
+      var links = Quicklinks.candidateItems(quicklinksStore.doc)
+      for (var q = 0; q < links.length; q++) {
+        var row = backend.quicklinkCandidate(links[q])
+        if (row) next.push(row)
+      }
     }
     var byId = ({})
     for (var j = 0; j < next.length; j++) byId[next[j].id] = next[j]
@@ -212,17 +218,37 @@ Item {
         else if (arg.required) return { toast: { style: "failure", title: arg.name + " is required" } }
       }
     }
-    var expanded = Quicklinks.expand(item.link, {
+    if (parsed.needsClipboard) {
+      backend.pendingQuicklink = { candidate: candidate, openWith: item.openWith || "", link: item.link, values: values }
+      if (!pasteProc.running) {
+        pasteProc.sawExit = false
+        pasteProc.running = true
+      }
+      return { wait: true }
+    }
+    return backend.launchQuicklink(candidate, item.openWith || "", item.link, values, "")
+  }
+
+  function launchQuicklink(candidate, openWith, link, values, clipboard) {
+    var expanded = Quicklinks.expand(link, {
       now: Date.now(),
       arguments: values,
-      clipboard: backend.clipboardText ? [backend.clipboardText] : [],
+      clipboard: clipboard ? [clipboard] : [],
       selection: "",
       uuid: Quicklinks.randomUuid()
     })
     if (!expanded.ok) return { toast: { style: "failure", title: expanded.error || "Could not expand link" } }
-    Util.execArgv(Quicklinks.openArgv(item.openWith, expanded.url, backend.paths.home))
+    backend.clipboardText = clipboard || ""
+    Util.execArgv(Quicklinks.openArgv(openWith, expanded.url, backend.paths.home))
     backend.recordVisit(candidate.id, "")
     return { close: true }
+  }
+
+  function finishClipboardOpen(text) {
+    var pending = backend.pendingQuicklink
+    if (!pending) return
+    backend.pendingQuicklink = null
+    backend.quicklinkReady(backend.launchQuicklink(pending.candidate, pending.openWith, pending.link, pending.values, text))
   }
 
   function quicklinkCommand(name) {
@@ -235,11 +261,15 @@ Item {
 
   function exportQuicklinks() {
     if (!quicklinksStore.loaded) return { toast: { style: "failure", title: "Quicklinks are not loaded" } }
+    var path = backend.paths.db + "/quicklinks-export.json"
     var json = JSON.stringify(Quicklinks.exportList(quicklinksStore.doc), null, 2) + "\n"
-    exportFile.path = backend.paths.db + "/quicklinks-export.json"
+    exportFile.failed = false
+    exportFile.errorText = ""
+    exportFile.path = path
     exportFile.setText(json)
+    if (exportFile.failed) return { toast: { style: "failure", title: "Could not write " + path + ": " + exportFile.errorText } }
     Util.execArgv(["wl-copy", "--", json])
-    return { toast: { style: "success", title: "Exported quicklinks" } }
+    return { toast: { style: "success", title: "Wrote " + path + " and copied it to the clipboard" } }
   }
 
   function readTextFile(path) {
@@ -280,11 +310,6 @@ Item {
     return { push: backend.quicklinkForm("create", { link: url }) }
   }
 
-  function refreshClipboard() {
-    if (pasteProc.running) pasteProc.running = false
-    pasteProc.running = true
-  }
-
   // One action on one row. Returns what the UI should do next:
   // { close, push: {view}, toast: {style, title}, hud: "text" }.
   function performAction(data) {
@@ -322,7 +347,7 @@ Item {
         case "quicklink":
           return backend.openQuicklink(candidate, null, false)
         case "fallback":
-          Util.execArgv(["omarchy-launch-browser", RootSearch.fallbackUrl(candidate, query)])
+          Util.execArgv(Quicklinks.openArgv("", RootSearch.fallbackUrl(candidate, query)))
           return { close: true }
       }
       throw new Error("Cannot open " + id)
@@ -484,7 +509,7 @@ Item {
         // Fallbacks are rows, not stored candidates.
         var fallback = RootSearch.FALLBACKS.filter(function(f) { return f.id === (data && data.id) })[0]
         if (fallback) {
-          Util.execArgv(["omarchy-launch-browser", RootSearch.fallbackUrl(fallback, data.query)])
+          Util.execArgv(Quicklinks.openArgv("", RootSearch.fallbackUrl(fallback, data.query)))
           return { close: true }
         }
         return backend.performAction(data)
@@ -578,10 +603,7 @@ Item {
   // Guards and providers describe live system state: refresh them each open.
   Component.onDestruction: { settingsStore.flush(); frecencyStore.flush(); quicklinksStore.flush() }
   onNotification: function(method, data) {
-    if (method === "window.visibilityChanged" && data && data.visible) {
-      menuSource.refresh()
-      backend.refreshClipboard()
-    }
+    if (method === "window.visibilityChanged" && data && data.visible) menuSource.refresh()
   }
 
   // ------------------------------------------------------------ persistence
@@ -637,6 +659,13 @@ Item {
     printErrors: false
     atomicWrites: true
     blockWrites: true
+    property bool failed: false
+    property string errorText: ""
+    onSaved: exportFile.failed = false
+    onSaveFailed: function(error) {
+      exportFile.failed = true
+      exportFile.errorText = FileViewError.toString(error)
+    }
   }
 
   FileView {
@@ -650,9 +679,19 @@ Item {
 
   Process {
     id: pasteProc
-    command: ["wl-paste", "-n"]
-    stdout: StdioCollector {
-      onStreamFinished: backend.clipboardText = text
+    property bool sawExit: false
+    command: ["wl-paste", "-n", "--type", "text/plain"]
+    stdout: StdioCollector { id: pasteOut }
+    // streamFinished runs inside the exit path, before this signal. Launch only here.
+    onExited: function(exitCode) {
+      pasteProc.sawExit = true
+      backend.finishClipboardOpen(exitCode === 0 ? String(pasteOut.text || "") : "")
+    }
+    onRunningChanged: {
+      if (pasteProc.running || pasteProc.sawExit || !backend.pendingQuicklink) return
+      Qt.callLater(function() {
+        if (!pasteProc.running && !pasteProc.sawExit && backend.pendingQuicklink) backend.finishClipboardOpen("")
+      })
     }
   }
 

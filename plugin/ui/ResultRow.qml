@@ -69,13 +69,17 @@ Item {
       Image {
         id: iconImage
         anchors.fill: parent
-        readonly property bool remote: row.iconName.indexOf("://") >= 0
+        readonly property bool remote: row.iconName.indexOf("https://") === 0
         visible: remote ? status === Image.Ready : (row.iconName.length > 0 && row.glyph.length === 0)
         fillMode: Image.PreserveAspectFit
         asynchronous: true
         sourceSize.width: width * Screen.devicePixelRatio
         sourceSize.height: height * Screen.devicePixelRatio
-        source: row.iconName.length === 0 ? "" : (remote ? row.iconName : (row.appLibrary ? row.appLibrary.iconSource(row.iconName) : Quickshell.iconPath(row.iconName, "application-x-executable")))
+        source: {
+          if (remote) return row.iconName
+          if (!visible) return ""
+          return row.appLibrary ? row.appLibrary.iconSource(row.iconName) : Quickshell.iconPath(row.iconName, "application-x-executable")
+        }
       }
 
       Text {

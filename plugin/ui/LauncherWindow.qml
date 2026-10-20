@@ -245,16 +245,12 @@ OverlayWindow {
     return r.ok ? r.data : []
   }
 
-  function perform(actionId, index) {
-    if (index !== undefined && index >= 0) window.select(index)
-    if (!window.selectedRow) return
-    var id = window.selectedRow.itemId
-    window.actionPanelOpen = false
-    var r = window.backend.callSync("rootSearch.performAction", { id: id, action: actionId, query: window.query })
-    if (!r.ok) { window.showToast("failure", r.error); return }
-    var outcome = r.data || {}
+  function applyLaunchOutcome(outcome) {
+    outcome = outcome || ({})
     if (outcome.push) { window.push(outcome.push); return }
+    if (outcome.wait) return
     if (outcome.close) {
+      if (window.view.kind === "quicklink-args") window.pop()
       if (outcome.hud) window.hud(outcome.hud)
       window.dismissRequested()
       // [I] A launch clears the root search, so the next open starts fresh
@@ -265,6 +261,16 @@ OverlayWindow {
     }
     if (outcome.toast) window.showToast(outcome.toast.style, outcome.toast.title)
     window.rebuild(false)
+  }
+
+  function perform(actionId, index) {
+    if (index !== undefined && index >= 0) window.select(index)
+    if (!window.selectedRow) return
+    var id = window.selectedRow.itemId
+    window.actionPanelOpen = false
+    var r = window.backend.callSync("rootSearch.performAction", { id: id, action: actionId, query: window.query })
+    if (!r.ok) { window.showToast("failure", r.error); return }
+    window.applyLaunchOutcome(r.data)
   }
 
   // nth action of the selected row: 0 primary (↵), 1 secondary (Ctrl ↵).
@@ -345,13 +351,7 @@ OverlayWindow {
     var args = window.formPayload()
     var r = window.backend.callSync("quicklinks.open", { id: window.view.quicklinkId, values: args })
     if (!r.ok) { window.showToast("failure", r.error); return }
-    var outcome = r.data || ({})
-    if (outcome.push) { window.push(outcome.push); return }
-    if (outcome.toast && !outcome.close) window.showToast(outcome.toast.style, outcome.toast.title)
-    if (outcome.close) {
-      if (outcome.hud) window.hud(outcome.hud)
-      window.dismissRequested()
-    }
+    window.applyLaunchOutcome(r.data)
   }
 
   function importQuicklinks() {
@@ -497,6 +497,7 @@ OverlayWindow {
       if (key === Qt.Key_PageDown) { window.move(8); return true }
       if (ctrl && shift && key === Qt.Key_F) { window.performIfOffered(["favorite-add", "favorite-remove"]); return true }
       if (ctrl && shift && key === Qt.Key_C) { window.performIfOffered(["copy-command", "copy-id", "copy-link"]); return true }
+      if (ctrl && !shift && !alt && key === Qt.Key_X && window.performIfOffered(["delete-quicklink"])) return true
       if (alt && shift && key === Qt.Key_D) { window.performIfOffered(["disable"]); return true }
       if (ctrl && key >= Qt.Key_1 && key <= Qt.Key_9) {
         var target = window.nthItem(key - Qt.Key_0)
@@ -506,7 +507,7 @@ OverlayWindow {
     }
 
     if (Util.editsFilter(event, window.query)) { window.setQuery(Util.editedFilter(event, window.query)); return true }
-    if (key === Qt.Key_Backspace && !window.query && !window.atRoot && !window.editor) { window.pop(); return true }
+    if (key === Qt.Key_Backspace && !window.query && !window.atRoot && (!window.editor || window.view.kind === "alias")) { window.pop(); return true }
     if (window.isTyping(event)) { window.setQuery(window.query + event.text); return true }
     return false
   }
@@ -521,6 +522,7 @@ OverlayWindow {
   Connections {
     target: window.backend
     function onCandidatesRevisionChanged() { if (window.shown && !window.actionPanelOpen && !window.editor) window.rebuild(false) }
+    function onQuicklinkReady(outcome) { window.applyLaunchOutcome(outcome) }
   }
 
   // ================================================================== UI
