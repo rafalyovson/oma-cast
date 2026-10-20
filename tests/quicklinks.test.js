@@ -112,7 +112,11 @@ test("import rejects a file that is not the documented array", () => {
   const doc = QL.createDocument()
   assert.match(QL.importText(doc, "{", { now: 1 }).error, /JSON/i)
   assert.match(QL.importText(doc, "{}", { now: 1 }).error, /array/i)
-  assert.match(QL.importText(doc, JSON.stringify([{ name: "X" }]), { now: 1 }).error, /link/i)
+  const missing = QL.importText(doc, JSON.stringify([{ name: "X" }]), { now: 1 })
+  assert.equal(missing.error, "")
+  assert.equal(missing.added, 0)
+  assert.deepEqual(missing.skippedNames, ["X"])
+  assert.deepEqual(missing.doc.items, [])
   assert.deepEqual(doc.items, [])
 })
 
@@ -193,7 +197,7 @@ test("uuid is filled in, and snippet, calculator, cursor, and browser-tab are re
   }
   const kept = QL.expand("keep {date\n}", { now: JUNE15 })
   assert.equal(kept.ok, true)
-  assert.equal(kept.url, "keep {date\n}")
+  assert.equal(kept.url, "keep%20{date\n}")
 })
 
 test("opening uses xdg-open, or uwsm-app gtk-launch when an app is chosen", () => {
@@ -382,7 +386,14 @@ test("Open With lists installed apps, prefers the link scheme, and keeps a missi
   const imported = QL.importText(doc, JSON.stringify([{ name: "Music", link: "spotify://x", openWith: "org.gnome.Music.desktop" }]), { now: 1, installed: apps })
   assert.equal(imported.error, "")
   assert.equal(imported.added, 1)
-  assert.match(QL.importText(doc, JSON.stringify([{ name: "Gone", link: "https://z.test", openWith: "gone.desktop" }]), { now: 1, installed: apps }).error, /installed/i)
+  const mixed = QL.importText(doc, JSON.stringify([
+    { name: "Good", link: "https://good.test" },
+    { name: "Gone", link: "https://z.test", openWith: "gone.desktop" }
+  ]), { now: 1, installed: apps })
+  assert.equal(mixed.error, "")
+  assert.equal(mixed.added, 1)
+  assert.deepEqual(mixed.skippedNames, ["Gone"])
+  assert.deepEqual(QL.list(mixed.doc).map((item) => item.name), ["Good"])
   const renamed = QL.update(saved.doc, { id: "ql-app", name: "Web" }, { now: 2, installed: [] })
   assert.equal(renamed.error, "")
   assert.equal(renamed.item.openWith, "firefox.desktop")
@@ -398,7 +409,10 @@ test("openWith has to be a desktop id", () => {
   for (const openWith of ["not a desktop id", "-evil.desktop", "foo/bar.desktop", "firefox"]) {
     assert.match(QL.save(doc, { name: "Bad", link: "https://bad.test", openWith }, { now: 1 }).error, /desktop/i, openWith)
   }
-  assert.match(QL.importText(doc, JSON.stringify([{ name: "Bad", link: "https://bad.test", openWith: "nope" }]), { now: 1 }).error, /desktop/i)
+  const badId = QL.importText(doc, JSON.stringify([{ name: "Bad", link: "https://bad.test", openWith: "nope" }]), { now: 1 })
+  assert.equal(badId.error, "")
+  assert.equal(badId.added, 0)
+  assert.deepEqual(badId.skippedNames, ["Bad"])
   assert.match(QL.update(ok.doc, { id: "ql-app", openWith: "firefox" }, { now: 2 }).error, /desktop/i)
   assert.equal(QL.get(ok.doc, "ql-app").openWith, "org.gnome.Music.desktop")
 })
@@ -525,12 +539,21 @@ test("a quoted brace stays inside the attribute", () => {
   assert.equal(QL.expand('{argument name="a}b"}', { arguments: { "a}b": "ok" } }).url, "ok")
 })
 
-test("import says a non-object row is invalid", () => {
+test("import skips a row that is not an object and names it", () => {
   const doc = QL.createDocument()
+  const result = QL.importText(doc, JSON.stringify([
+    { name: "Good", link: "https://good.test" },
+    null,
+    { name: "Also", link: "https://also.test" }
+  ]), { now: 1 })
+  assert.equal(result.error, "")
+  assert.deepEqual(result.skippedNames, ["row 2"])
+  assert.deepEqual(QL.list(result.doc).map((item) => item.name), ["Good", "Also"])
   for (const row of [null, "nope", []]) {
-    const result = QL.importText(doc, JSON.stringify([row]), { now: 1 })
-    assert.match(result.error, /invalid/i)
-    assert.doesNotMatch(result.error, /needs a link/i)
+    const alone = QL.importText(doc, JSON.stringify([row]), { now: 1 })
+    assert.equal(alone.error, "")
+    assert.deepEqual(alone.skippedNames, ["row 1"])
+    assert.equal(alone.added, 0)
   }
   assert.deepEqual(doc.items, [])
 })
@@ -548,6 +571,167 @@ test("candidates drop items that are not objects with string id, name, and link"
   }
   assert.deepEqual(QL.candidateItems(doc).map((item) => item.id), ["ql-1", "ql-5"])
   assert.equal(QL.toCandidate({ id: 2, name: "Num", link: "https://n.test" }), null)
+})
+
+test("a Qt date locale that throws still expands with the French month", () => {
+  const previous = global.Qt
+  global.Qt = {
+    locale: function (name) { return { name: name } },
+    formatDateTime: function () {
+      throw new Error("Passing incompatible arguments to C++ functions from JavaScript is not allowed")
+    }
+  }
+  try {
+    const expanded = QL.expand('{date locale="fr-FR" | raw}', { now: JUNE15 })
+    assert.equal(expanded.ok, true)
+    assert.match(expanded.url, /juin/)
+  } finally {
+    if (previous === undefined) delete global.Qt
+    else global.Qt = previous
+  }
+})
+
+test("a Qt date locale that returns text is the expanded date", () => {
+  const previous = global.Qt
+  global.Qt = {
+    locale: function (name) { return { name: name } },
+    formatDateTime: function () { return "15 juin 2022" }
+  }
+  try {
+    assert.equal(QL.expand('{date locale="fr-FR" | raw}', { now: JUNE15 }).url, "15 juin 2022")
+  } finally {
+    if (previous === undefined) delete global.Qt
+    else global.Qt = previous
+  }
+})
+
+test("a bare domain, IP, IDN, or host port opens as http or https", () => {
+  assert.deepEqual(QL.openArgv("", "münchen.de"), ["omarchy-launch-browser", "https://münchen.de"])
+  assert.deepEqual(QL.openArgv("", "1.2.3.4"), ["omarchy-launch-browser", "https://1.2.3.4"])
+  assert.deepEqual(QL.openArgv("", "8.8.8.8:443/x"), ["omarchy-launch-browser", "https://8.8.8.8:443/x"])
+  assert.deepEqual(QL.openArgv("", "localhost:3000"), ["omarchy-launch-browser", "http://localhost:3000"])
+  assert.deepEqual(QL.openArgv("", "LOCALHOST:3000/a"), ["omarchy-launch-browser", "http://LOCALHOST:3000/a"])
+  assert.deepEqual(QL.openArgv("", "127.0.0.1:3000"), ["omarchy-launch-browser", "https://127.0.0.1:3000"])
+  assert.deepEqual(QL.openArgv("", "mailto:a@b.c"), ["xdg-open", "mailto:a@b.c"])
+  assert.deepEqual(QL.openArgv("", "tel:+15551212"), ["xdg-open", "tel:+15551212"])
+  assert.equal(QL.openArgv("", "javascript:alert(1)"), null)
+  assert.equal(QL.openArgv("", "  JaVaScRiPt:alert(1)"), null)
+  assert.equal(QL.refusedLink("javascript:alert(1)"), "Quicklink link cannot use javascript:")
+  const saved = QL.save(QL.createDocument(), { name: "Js", link: "javascript:alert(1)" }, { now: 1 })
+  assert.match(saved.error, /javascript/i)
+  assert.deepEqual(QL.openArgv("", "notes"), ["xdg-open", "notes"])
+  assert.deepEqual(QL.openArgv("", "word:value"), ["xdg-open", "word:value"])
+})
+
+test("deleting a quicklink drops its alias, favorite, and enabled settings", () => {
+  const commands = {
+    "quicklink:ql-1": { alias: "go", favoriteOrder: 1, enabled: false },
+    "app:firefox": { alias: "ff", favoriteOrder: 0 }
+  }
+  const next = QL.clearQuicklinkSettings(commands, "ql-1")
+  assert.equal(next["quicklink:ql-1"], undefined)
+  assert.deepEqual(next["app:firefox"], { alias: "ff", favoriteOrder: 0 })
+  assert.equal(commands["quicklink:ql-1"].alias, "go")
+  const fs = require("node:fs")
+  const path = require("node:path")
+  const backend = fs.readFileSync(path.join(__dirname, "../plugin/Backend.qml"), "utf8")
+  assert.match(backend, /Quicklinks\.clearQuicklinkSettings/)
+})
+
+test("save rejects an unclosed placeholder or quote", () => {
+  const doc = QL.createDocument()
+  assert.match(QL.parseLink("https://x.test/{argument").error, /placeholder/i)
+  assert.match(QL.save(doc, { name: "Open", link: "https://x.test/{argument" }, { now: 1 }).error, /placeholder/i)
+  assert.match(QL.parseLink('https://x.test/{argument name="q}').error, /quote/i)
+  assert.match(QL.save(doc, { name: "Quote", link: 'https://x.test/{argument name="q}' }, { now: 1 }).error, /quote/i)
+  assert.equal(QL.expand("https://x.test/{argument", {}).ok, false)
+  assert.deepEqual(doc.items, [])
+  const quoted = QL.parseLink('{argument name="a}b" default="x}y"}')
+  assert.equal(quoted.error, "")
+  assert.equal(quoted.arguments[0].name, "a}b")
+})
+
+test("literal spaces and quotes in a link are percent-encoded", () => {
+  const spaced = QL.expand('https://x.test/my file/{argument name="q" | raw}', { arguments: { q: 'a "b"' } })
+  assert.equal(spaced.ok, true)
+  assert.equal(spaced.url, "https://x.test/my%20file/a \"b\"")
+  const quoted = QL.expand('https://x.test/say "hi"/{argument name="q"}', { arguments: { q: "a b" } })
+  assert.equal(quoted.url, "https://x.test/say%20%22hi%22/a%20b")
+})
+
+test("a required argument of only spaces is missing, and a real value is trimmed", () => {
+  const parsed = QL.parseLink("https://x.test/?q={query}")
+  const blank = QL.normalizeArguments(parsed, { query: "   " })
+  assert.match(blank.error, /query is required/)
+  const trimmed = QL.normalizeArguments(parsed, { query: "  hi  " })
+  assert.equal(trimmed.error, "")
+  assert.equal(trimmed.values.query, "hi")
+  const withDefault = QL.parseLink('https://x.test/?q={argument name="q" default="fallback"}')
+  assert.equal(QL.normalizeArguments(withDefault, { q: "   " }).values.q, "fallback")
+  const fs = require("node:fs")
+  const path = require("node:path")
+  const backend = fs.readFileSync(path.join(__dirname, "../plugin/Backend.qml"), "utf8")
+  assert.match(backend, /Quicklinks\.normalizeArguments/)
+})
+
+test("save rejects a duplicate name and a name past 200 characters", () => {
+  const doc = QL.createDocument()
+  const first = QL.save(doc, { name: "Same", link: "https://a.test" }, { now: 1, id: "ql-1" })
+  assert.equal(first.error, "")
+  assert.match(QL.save(first.doc, { name: "Same", link: "https://b.test" }, { now: 2 }).error, /already/i)
+  const renamed = QL.update(first.doc, { id: "ql-1", link: "https://a.test/2" }, { now: 3 })
+  assert.equal(renamed.error, "")
+  assert.equal(renamed.item.name, "Same")
+  assert.match(QL.save(doc, { name: "n".repeat(201), link: "https://c.test" }, { now: 1 }).error, /too long/i)
+  assert.equal(QL.save(doc, { name: "n".repeat(200), link: "https://c.test" }, { now: 1 }).error, "")
+  const imported = QL.importText(first.doc, JSON.stringify([
+    { name: "Same", link: "https://other.test" },
+    { name: "New", link: "https://new.test" }
+  ]), { now: 4 })
+  assert.equal(imported.error, "")
+  assert.equal(imported.added, 1)
+  assert.deepEqual(imported.skippedNames, ["Same"])
+  assert.deepEqual(QL.list(imported.doc).map((item) => item.name), ["Same", "New"])
+})
+
+test("a favicon host drops userinfo and the port", () => {
+  const item = { id: "ql-1", name: "Secret", link: "https://user:pass@files.example/a", iconName: "", openWith: "" }
+  const hinted = QL.toCandidate(item, { favicons: true })
+  assert.equal(hinted.iconName, "https://icons.duckduckgo.com/ip3/files.example.ico")
+  const port = QL.toCandidate({
+    id: "ql-2", name: "Port", link: "https://user:p@ss@files.example:8443/a", iconName: "", openWith: ""
+  }, { favicons: true })
+  assert.equal(port.iconName, "https://icons.duckduckgo.com/ip3/files.example.ico")
+})
+
+test("a URL query includes a bare host, an IP, localhost port, mailto, and tel", () => {
+  assert.equal(RS.isUrlQuery("münchen.de"), true)
+  assert.equal(RS.normalizedUrl("münchen.de"), "https://münchen.de")
+  assert.equal(RS.isUrlQuery("1.2.3.4"), true)
+  assert.equal(RS.normalizedUrl("8.8.8.8:443/x"), "https://8.8.8.8:443/x")
+  assert.equal(RS.isUrlQuery("localhost:3000"), true)
+  assert.equal(RS.normalizedUrl("localhost:3000"), "http://localhost:3000")
+  assert.equal(RS.isUrlQuery("mailto:a@b.c"), true)
+  assert.equal(RS.normalizedUrl("mailto:a@b.c"), "mailto:a@b.c")
+  assert.equal(RS.isUrlQuery("tel:+15551212"), true)
+  assert.equal(RS.normalizedUrl("tel:+15551212"), "tel:+15551212")
+  assert.equal(RS.isUrlQuery("javascript:alert(1)"), false)
+  assert.equal(RS.isUrlQuery("word:value"), false)
+  assert.equal(RS.isUrlQuery("notes"), false)
+  assert.equal(RS.isUrlQuery("http:"), false)
+  const sections = RS.rootSections([], "localhost:3000", ctx(), deps)
+  assert.equal(sections[0].id, "url")
+  assert.equal(sections[0].rows[0].candidate.subtitle, "http://localhost:3000")
+  assert.equal(sections[0].rows[1].candidate.link, "http://localhost:3000")
+  const mail = RS.rootSections([], "mailto:a@b.c", ctx(), deps)
+  assert.equal(mail[0].rows[0].candidate.subtitle, "mailto:a@b.c")
+})
+
+test("import names each skipped row in the toast", () => {
+  const fs = require("node:fs")
+  const path = require("node:path")
+  const qml = fs.readFileSync(path.join(__dirname, "../plugin/ui/LauncherWindow.qml"), "utf8")
+  assert.match(qml, /skippedNames/)
 })
 
 test("Create Quicklink and Search Quicklinks are commands", () => {
