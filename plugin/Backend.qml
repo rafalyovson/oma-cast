@@ -244,14 +244,9 @@ Item {
     var parsed = Quicklinks.parseLink(item.link)
     if (parsed.error) return { toast: { style: "failure", title: parsed.error } }
     if (parsed.arguments.length > 0 && !hasArgs) return { push: backend.argumentForm(item, parsed) }
-    var values = args || ({})
-    for (var i = 0; i < parsed.arguments.length; i++) {
-      var arg = parsed.arguments[i]
-      if (values[arg.name] == null || values[arg.name] === "") {
-        if (arg.defaultValue) values[arg.name] = arg.defaultValue
-        else if (arg.required) return { toast: { style: "failure", title: arg.name + " is required" } }
-      }
-    }
+    var normalized = Quicklinks.normalizeArguments(parsed, args || ({}))
+    if (normalized.error) return { toast: { style: "failure", title: normalized.error } }
+    var values = normalized.values
     if (parsed.needsClipboard) {
       backend.pendingQuicklink = { candidate: candidate, openWith: item.openWith || "", link: item.link, values: values }
       if (!pasteProc.running) {
@@ -276,9 +271,8 @@ Item {
     if (!prepared.ok) return { toast: { style: "failure", title: prepared.error } }
     var argv = Quicklinks.openArgv(prepared.openWith, expanded.url, backend.paths.home)
     if (!argv) {
-      var target = String(expanded.url || "").trim()
-      var title = !target || target.charAt(0) === "-" ? "Link cannot start with -" : "Open with must be a desktop id"
-      return { toast: { style: "failure", title: title } }
+      var refusal = Quicklinks.refusedLink(expanded.url)
+      return { toast: { style: "failure", title: refusal || "Open with must be a desktop id" } }
     }
     Util.execArgv(argv)
     backend.recordVisit(candidate.id, "")
@@ -286,6 +280,8 @@ Item {
   }
 
   function openBrowser(url) {
+    var refusal = Quicklinks.refusedLink(url)
+    if (refusal) return { toast: { style: "failure", title: refusal } }
     var argv = Quicklinks.browserArgv(url)
     if (!argv) return { toast: { style: "failure", title: "Link cannot start with -" } }
     Util.execArgv(argv)
@@ -372,7 +368,7 @@ Item {
     if (result.error) throw new Error(result.error)
     quicklinksStore.update(function() { return result.doc })
     backend.emit("quicklinks.updated", null)
-    return { added: result.added, skipped: result.skipped }
+    return { added: result.added, skipped: result.skipped, skippedNames: result.skippedNames || [] }
   }
 
   function urlAction(id, query) {
@@ -631,6 +627,12 @@ Item {
         var result = Quicklinks.remove(quicklinksStore.doc, id)
         if (result.error) throw new Error(result.error)
         quicklinksStore.update(function() { return result.doc })
+        if (settingsStore.loaded) {
+          settingsStore.update(function(doc) {
+            doc.commands = Quicklinks.clearQuicklinkSettings(doc.commands, id)
+          })
+          backend.emit("settings.commandSettingsChanged", { commandId: "quicklink:" + id })
+        }
         backend.emit("quicklinks.updated", { id: id })
         return null
       },

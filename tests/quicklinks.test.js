@@ -311,12 +311,15 @@ test("the quicklinks migration keeps a library that is already there", () => {
   assert.equal(migrated.doc.items[1].iconName, "")
 })
 
-test("save and import reject a remote icon and leave the library unchanged", () => {
+test("save rejects a remote icon, and import skips that row", () => {
   const doc = QL.createDocument()
   const remote = "https://evil.test/a.png"
   assert.match(QL.save(doc, { name: "X", link: "https://x.test", iconName: remote }, { now: 1 }).error, /icon/i)
   assert.deepEqual(doc.items, [])
-  assert.match(QL.importText(doc, JSON.stringify([{ name: "X", link: "https://x.test", iconName: remote }]), { now: 1 }).error, /icon/i)
+  const imported = QL.importText(doc, JSON.stringify([{ name: "X", link: "https://x.test", iconName: remote }]), { now: 1 })
+  assert.equal(imported.error, "")
+  assert.deepEqual(imported.skippedNames, ["X"])
+  assert.deepEqual(imported.doc.items, [])
   assert.deepEqual(doc.items, [])
   const saved = QL.save(doc, { name: "X", link: "https://x.test", iconName: "folder-16" }, { now: 1, id: "ql-1" })
   assert.equal(saved.error, "")
@@ -342,7 +345,10 @@ test("a link that starts with a dash is rejected when it is saved and when it is
   const doc = QL.createDocument()
   assert.match(QL.save(doc, { name: "Dash", link: "-https://x.test" }, { now: 1 }).error, /-/)
   assert.deepEqual(doc.items, [])
-  assert.match(QL.importText(doc, JSON.stringify([{ name: "Dash", link: " -rf" }]), { now: 1 }).error, /-/)
+  const imported = QL.importText(doc, JSON.stringify([{ name: "Dash", link: " -rf" }]), { now: 1 })
+  assert.equal(imported.error, "")
+  assert.deepEqual(imported.skippedNames, ["Dash"])
+  assert.deepEqual(imported.doc.items, [])
   assert.deepEqual(doc.items, [])
   const saved = QL.save(doc, { name: "Arg", link: "{argument name=\"q\"}", openWith: "" }, { now: 1, id: "ql-arg" })
   assert.equal(saved.error, "")

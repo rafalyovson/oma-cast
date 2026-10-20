@@ -491,8 +491,9 @@ OverlayWindow {
     if (!r.ok) { window.showToast("failure", r.error); return }
     var added = r.data && r.data.added ? r.data.added : 0
     var skipped = r.data && r.data.skipped ? r.data.skipped : 0
+    var names = r.data && r.data.skippedNames && r.data.skippedNames.length ? r.data.skippedNames.join(", ") : ""
     window.pop()
-    window.showToast("success", added + " added, " + skipped + " skipped")
+    window.showToast("success", added + " added, " + skipped + " skipped" + (names ? " (" + names + ")" : ""))
     window.rebuild(false)
   }
 
@@ -974,7 +975,7 @@ OverlayWindow {
           anchors.horizontalCenter: parent.horizontalCenter
           textFormat: Text.PlainText
           text: window.view.kind === "alias" ? "Typing the alias exactly in the root search puts this command on top. Leave it empty to remove it."
-            : (window.view.kind === "quicklink-import" ? "Paste a JSON array, or type a path to one. A repeated name and link is skipped."
+            : (window.view.kind === "quicklink-import" ? "Paste a JSON array, or type a path to one. A repeated name and link is skipped. A bad row is skipped and named."
             : (window.view.kind === "confirm-delete-quicklink" ? "Press ↵ to delete this quicklink. Esc cancels." : ""))
           visible: text.length > 0
           color: window.look.foreground

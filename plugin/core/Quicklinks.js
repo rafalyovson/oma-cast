@@ -2,13 +2,17 @@
 // import/export, and the root-search row for one saved link.
 // [D] A repeated import is a duplicate only when both the name and the link match.
 // [D] Substituted values are percent-encoded unless the placeholder says raw.
+// [D] Spaces and quotes in the literal link text are percent-encoded on expand.
+// [D] A name is unique after trim, and longer than NAME_MAX is rejected.
 // [I] Date patterns use local Date getters. A locale uses Qt.formatDateTime when Qt is present.
+//     A throw from that call falls back to the JS month names so the link still opens.
 
 var KEYWORDS = ["browser-tab", "calculator", "clipboard", "datetime", "argument", "selection", "snippet", "cursor", "date", "time", "uuid", "day", "ai"]
 var REFUSED = { cursor: true, "browser-tab": true, snippet: true, calculator: true, ai: true }
 var MODIFIERS = ["uppercase", "lowercase", "trim", "percent-encode", "json-stringify", "raw"]
 var QUOTE_PAIRS = { "\"": "\"", "'": "'", "`": "`", "\u201c": "\u201d", "\u2018": "\u2019" }
 var DATE_TOKENS = ["yyyy", "yy", "MMMM", "MMM", "MM", "EEEE", "HH", "hh", "mm", "ss", "dd", "y", "M", "d", "E", "H", "h", "m", "s", "a"]
+var NAME_MAX = 200 // [D] Cap for a launcher row. Not a limit observed in Raycast.
 
 function createDocument() {
   return { items: [] }
@@ -41,15 +45,17 @@ function makeId(doc, now) {
 }
 
 function blankResult(doc, error) {
-  return { doc: doc, item: null, error: error, added: 0, skipped: 0 }
+  return { doc: doc, item: null, error: error, added: 0, skipped: 0, skippedNames: [] }
 }
 
 function buildItem(input, id, now, ctx) {
   var name = String(input && input.name != null ? input.name : "").trim()
   var link = String(input && input.link != null ? input.link : "").trim()
   if (!name) return { error: "Quicklink needs a name" }
+  if (name.length > NAME_MAX) return { error: "Quicklink name is too long" }
   if (!link) return { error: "Quicklink needs a link" }
   if (link.charAt(0) === "-") return { error: "Quicklink link cannot start with -" }
+  if (/^javascript:/i.test(link)) return { error: "Quicklink link cannot use javascript:" }
   var parsed = parseLink(link)
   if (parsed.error) return { error: parsed.error }
   var iconName = String(input.iconName || "").trim()
@@ -313,6 +319,7 @@ function save(doc, input, ctx) {
   if (get(next, id)) return blankResult(doc, "Quicklink id already exists")
   var built = buildItem(input, id, now, ctx)
   if (built.error) return blankResult(doc, built.error)
+  if (takenName(next, built.item.name, "")) return blankResult(doc, "Quicklink name is already used")
   next.items.push(built.item)
   return { doc: next, item: built.item, error: "", added: 1, skipped: 0 }
 }
@@ -333,6 +340,7 @@ function update(doc, patch, ctx) {
     allowOpenWith: current.openWith
   })
   if (built.error) return blankResult(doc, built.error)
+  if (takenName(next, built.item.name, id)) return blankResult(doc, "Quicklink name is already used")
   built.item.createdAt = current.createdAt
   built.item.updatedAt = now
   var next = cloneDoc(doc)
@@ -352,6 +360,24 @@ function sameLink(a, b) {
     && String(a.link || "").trim() === String(b.link || "").trim()
 }
 
+function takenName(doc, name, exceptId) {
+  var wanted = String(name || "").trim()
+  var items = doc && doc.items ? doc.items : []
+  for (var i = 0; i < items.length; i++) {
+    if (exceptId && items[i].id === exceptId) continue
+    if (String(items[i].name || "").trim() === wanted) return true
+  }
+  return false
+}
+
+function rowLabel(row, index) {
+  if (row && typeof row === "object" && !Array.isArray(row) && row.name != null) {
+    var name = String(row.name).trim()
+    if (name) return name.length > 80 ? name.slice(0, 80) : name
+  }
+  return "row " + (index + 1)
+}
+
 function importText(doc, jsonString, ctx) {
   var parsed
   try {
@@ -365,24 +391,37 @@ function importText(doc, jsonString, ctx) {
   var next = cloneDoc(doc)
   var added = 0
   var skipped = 0
+  var skippedNames = []
   for (var i = 0; i < parsed.length; i++) {
     var row = parsed[i]
-    if (!row || typeof row !== "object" || Array.isArray(row)) return blankResult(doc, "Import row is invalid")
+    var label = rowLabel(row, i)
+    if (!row || typeof row !== "object" || Array.isArray(row)) {
+      skipped++
+      skippedNames.push(label)
+      continue
+    }
     var name = String(row.name != null ? row.name : "").trim()
     var link = String(row.link != null ? row.link : "").trim()
-    if (!name) return blankResult(doc, "Quicklink needs a name")
-    if (!link) return blankResult(doc, "Quicklink needs a link")
+    if (!name || !link) {
+      skipped++
+      skippedNames.push(label)
+      continue
+    }
     var duplicate = false
     for (var j = 0; j < next.items.length; j++) {
       if (sameLink(next.items[j], { name: name, link: link })) { duplicate = true; break }
     }
     if (duplicate) { skipped++; continue }
     var built = buildItem({ name: name, link: link, iconName: row.iconName, openWith: row.openWith }, makeId(next, now + i), now, ctx)
-    if (built.error) return blankResult(doc, built.error)
+    if (built.error || takenName(next, name, "")) {
+      skipped++
+      skippedNames.push(label)
+      continue
+    }
     next.items.push(built.item)
     added++
   }
-  return { doc: next, item: null, error: "", added: added, skipped: skipped }
+  return { doc: next, item: null, error: "", added: added, skipped: skipped, skippedNames: skippedNames }
 }
 
 function exportList(doc) {
@@ -566,11 +605,12 @@ function placeholderEnd(text, start) {
       if (ch === quote) quote = ""
       continue
     }
-    if (ch === "\n" || ch === "\r") return -1
+    if (ch === "\n" || ch === "\r") return { end: -1, error: "" }
     if (isOpenQuote(ch)) { quote = QUOTE_PAIRS[ch]; continue }
-    if (ch === "}") return i
+    if (ch === "}") return { end: i, error: "" }
   }
-  return -1
+  if (quote) return { end: -1, error: "Unclosed quote" }
+  return { end: -1, error: "Unclosed placeholder" }
 }
 
 function scanPlaceholders(link) {
@@ -580,16 +620,19 @@ function scanPlaceholders(link) {
   while (i < text.length) {
     var start = text.indexOf("{", i)
     if (start < 0) break
-    var end = placeholderEnd(text, start)
-    if (end < 0) { i = start + 1; continue }
-    found.push({ start: start, end: end + 1, placeholder: parsePlaceholder(text.slice(start + 1, end)) })
-    i = end + 1
+    var closed = placeholderEnd(text, start)
+    if (closed.error) return { error: closed.error, found: [] }
+    if (closed.end < 0) { i = start + 1; continue }
+    found.push({ start: start, end: closed.end + 1, placeholder: parsePlaceholder(text.slice(start + 1, closed.end)) })
+    i = closed.end + 1
   }
-  return found
+  return { error: "", found: found }
 }
 
 function parseLink(link) {
-  var found = scanPlaceholders(link)
+  var scanned = scanPlaceholders(link)
+  if (scanned.error) return { error: scanned.error, arguments: [], needsClipboard: false, needsSelection: false }
+  var found = scanned.found
   var args = []
   var needsClipboard = false
   var needsSelection = false
@@ -688,8 +731,14 @@ function frenchLocale(locale) {
 
 function formatWithQt(ms, pattern, locale) {
   if (!locale || typeof Qt === "undefined" || !Qt.locale || !Qt.formatDateTime) return ""
-  var formatted = Qt.formatDateTime(new Date(ms), pattern, Qt.locale(String(locale).replace(/-/g, "_")))
-  return formatted ? String(formatted) : ""
+  // The 3-arg overload throws "incompatible arguments" on the live shell.
+  // An empty result lets defaultDate use the JS month names.
+  try {
+    var formatted = Qt.formatDateTime(new Date(ms), pattern, Qt.locale(String(locale).replace(/-/g, "_")))
+    return formatted ? String(formatted) : ""
+  } catch (e) {
+    return ""
+  }
 }
 
 function weekdayName(ms, locale, width) {
@@ -811,6 +860,15 @@ function resolvePlaceholder(placeholder, ctx) {
   return { ok: false, text: "", error: placeholder.error || "Unknown placeholder" }
 }
 
+function encodeLiteral(text) {
+  return String(text).replace(/[ "'`]/g, function(ch) {
+    if (ch === " ") return "%20"
+    if (ch === "\"") return "%22"
+    if (ch === "'") return "%27"
+    return "%60"
+  })
+}
+
 function expand(link, ctx) {
   var text = String(link || "")
   var context = ctx || {}
@@ -818,18 +876,19 @@ function expand(link, ctx) {
   var i = 0
   while (i < text.length) {
     var start = text.indexOf("{", i)
-    if (start < 0) { out += text.slice(i); break }
-    out += text.slice(i, start)
-    var end = placeholderEnd(text, start)
-    if (end < 0) { out += "{"; i = start + 1; continue }
-    var placeholder = parsePlaceholder(text.slice(start + 1, end))
+    if (start < 0) { out += encodeLiteral(text.slice(i)); break }
+    out += encodeLiteral(text.slice(i, start))
+    var closed = placeholderEnd(text, start)
+    if (closed.error) return { ok: false, url: "", error: closed.error }
+    if (closed.end < 0) { out += "{"; i = start + 1; continue }
+    var placeholder = parsePlaceholder(text.slice(start + 1, closed.end))
     if (placeholder.error) return { ok: false, url: "", error: placeholder.error }
     var value = resolvePlaceholder(placeholder, context)
     if (!value.ok) return { ok: false, url: "", error: value.error }
     var shaped = applyModifiers(value.text, placeholder.modifiers)
     if (!shaped.ok) return { ok: false, url: "", error: shaped.error }
     out += shaped.text
-    i = end + 1
+    i = closed.end + 1
   }
   return { ok: true, url: out, error: "" }
 }
@@ -841,28 +900,89 @@ function expandHome(url, home) {
   return text
 }
 
-// A dotted host with no scheme, such as test.am or www.example.com/a.
+function isPort(text) {
+  if (!/^\d{1,5}$/.test(text)) return false
+  var n = parseInt(text, 10)
+  return n >= 0 && n <= 65535
+}
+
+function isIpv4(host) {
+  var parts = String(host || "").split(".")
+  if (parts.length !== 4) return false
+  for (var i = 0; i < parts.length; i++) {
+    if (!/^\d{1,3}$/.test(parts[i])) return false
+    if (parseInt(parts[i], 10) > 255) return false
+  }
+  return true
+}
+
+function isHostLabel(label) {
+  if (!label || label.length > 63) return false
+  if (label.charAt(0) === "-" || label.charAt(label.length - 1) === "-") return false
+  for (var i = 0; i < label.length; i++) {
+    var code = label.charCodeAt(i)
+    if (code > 127) continue
+    if (!/[A-Za-z0-9-]/.test(label.charAt(i))) return false
+  }
+  return true
+}
+
+function isDomain(host) {
+  if (String(host || "").toLowerCase() === "localhost") return true
+  var labels = String(host || "").split(".")
+  if (labels.length < 2) return false
+  for (var i = 0; i < labels.length; i++) if (!isHostLabel(labels[i])) return false
+  var last = labels[labels.length - 1]
+  for (var c = 0; c < last.length; c++) {
+    if (last.charCodeAt(c) > 127 || /[A-Za-z]/.test(last.charAt(c))) return true
+  }
+  return false
+}
+
+function splitHostPort(authority) {
+  var colon = authority.lastIndexOf(":")
+  if (colon < 0) return { host: authority, port: "" }
+  if (authority.indexOf(":") !== colon) return null
+  var port = authority.slice(colon + 1)
+  if (!isPort(port)) return null
+  return { host: authority.slice(0, colon), port: port }
+}
+
+// A host with no scheme: a domain, an IPv4 address, an IDN such as münchen.de,
+// or host:port. localhost is http [D]. Every other bare host is https.
 // Paths (~/, /, ./) and anything that already has a scheme stay as written.
-function httpsForBareHost(target) {
-  var text = String(target || "")
+// RootSearch.js repeats these rules. core modules cannot import each other.
+function bareWebUrl(target) {
+  var text = String(target || "").trim()
   if (!text || /\s/.test(text)) return ""
   var first = text.charAt(0)
   if (first === "/" || first === "~" || first === "." || first === "-") return ""
   if (text.indexOf("://") >= 0) return ""
-  // A colon before the first dot is a scheme (mailto:). host:port keeps the colon after the dot.
-  var dot = text.indexOf(".")
-  var colon = text.indexOf(":")
-  if (colon >= 0 && (dot < 0 || colon < dot)) return ""
-  if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+(?::\d+)?(?:[/?#]\S*)?$/i.test(text)) return ""
-  return "https://" + text
+  if (/^javascript:/i.test(text)) return ""
+  var cut = text.search(/[/?#]/)
+  var authority = cut < 0 ? text : text.slice(0, cut)
+  var tail = cut < 0 ? "" : text.slice(cut)
+  if (!authority) return ""
+  var split = splitHostPort(authority)
+  if (!split || !split.host) return ""
+  if (!isIpv4(split.host) && !isDomain(split.host)) return ""
+  var scheme = split.host.toLowerCase() === "localhost" ? "http" : "https"
+  return scheme + "://" + split.host + (split.port ? ":" + split.port : "") + tail
+}
+
+function refusedLink(url) {
+  var target = String(url || "").trim()
+  if (/^javascript:/i.test(target)) return "Quicklink link cannot use javascript:"
+  if (!target || target.charAt(0) === "-") return "Link cannot start with -"
+  return ""
 }
 
 function openArgv(openWith, url, home) {
   var target = expandHome(url, home).trim()
   // Omarchy's xdg-open is a script that rejects "--" ("unexpected option '--'").
   // A target that starts with "-" would be read as an option, so it is refused.
-  if (!target || target.charAt(0) === "-") return null
-  var bare = httpsForBareHost(target)
+  if (refusedLink(target)) return null
+  var bare = bareWebUrl(target)
   if (bare) target = bare
   var app = String(openWith || "").trim()
   if (!app) {
@@ -886,9 +1006,41 @@ function faviconFor(link) {
   var head = String(link || "").split("{")[0].trim()
   var match = /^https:\/\/([^\/?#]+)/i.exec(head)
   if (!match) return ""
-  var host = match[1].replace(/:\d+$/, "")
+  var authority = match[1]
+  var at = authority.lastIndexOf("@")
+  if (at >= 0) authority = authority.slice(at + 1)
+  var host = authority.replace(/:\d+$/, "")
   if (!host) return ""
   return "https://icons.duckduckgo.com/ip3/" + host + ".ico"
+}
+
+function clearQuicklinkSettings(commands, id) {
+  var key = "quicklink:" + String(id || "")
+  var next = {}
+  var source = commands && typeof commands === "object" ? commands : {}
+  for (var name in source) {
+    if (name === key) continue
+    next[name] = source[name]
+  }
+  return next
+}
+
+function normalizeArguments(parsed, values) {
+  var out = {}
+  var source = values || {}
+  for (var key in source) out[key] = source[key]
+  var args = parsed && parsed.arguments ? parsed.arguments : []
+  for (var i = 0; i < args.length; i++) {
+    var arg = args[i]
+    var raw = out[arg.name]
+    var text = raw == null ? "" : String(raw).trim()
+    if (!text) {
+      if (arg.defaultValue) out[arg.name] = arg.defaultValue
+      else if (arg.required) return { error: arg.name + " is required", values: out }
+      out[arg.name] = arg.defaultValue || ""
+    } else out[arg.name] = text
+  }
+  return { error: "", values: out }
 }
 
 function isItem(item) {
@@ -953,6 +1105,9 @@ if (typeof module !== "undefined") {
     parseLink: parseLink,
     expand: expand,
     openArgv: openArgv,
+    refusedLink: refusedLink,
+    clearQuicklinkSettings: clearQuicklinkSettings,
+    normalizeArguments: normalizeArguments,
     installedApps: installedApps,
     openWithChoices: openWithChoices,
     openWithLabel: openWithLabel,

@@ -245,17 +245,91 @@ function submenuSections(candidates, menuId, query, ctx, deps) {
   return ranked.length ? [{ id: "results", title: "Results", rows: ranked }] : []
 }
 
-// A query with no spaces that is scheme://rest or www plus a host (SPEC §7.5).
+// Keep in step with Quicklinks.bareWebUrl. core modules cannot import each other.
+function isPort(text) {
+  if (!/^\d{1,5}$/.test(text)) return false
+  var n = parseInt(text, 10)
+  return n >= 0 && n <= 65535
+}
+
+function isIpv4(host) {
+  var parts = String(host || "").split(".")
+  if (parts.length !== 4) return false
+  for (var i = 0; i < parts.length; i++) {
+    if (!/^\d{1,3}$/.test(parts[i])) return false
+    if (parseInt(parts[i], 10) > 255) return false
+  }
+  return true
+}
+
+function isHostLabel(label) {
+  if (!label || label.length > 63) return false
+  if (label.charAt(0) === "-" || label.charAt(label.length - 1) === "-") return false
+  for (var i = 0; i < label.length; i++) {
+    var code = label.charCodeAt(i)
+    if (code > 127) continue
+    if (!/[A-Za-z0-9-]/.test(label.charAt(i))) return false
+  }
+  return true
+}
+
+function isDomain(host) {
+  if (String(host || "").toLowerCase() === "localhost") return true
+  var labels = String(host || "").split(".")
+  if (labels.length < 2) return false
+  for (var i = 0; i < labels.length; i++) if (!isHostLabel(labels[i])) return false
+  var last = labels[labels.length - 1]
+  for (var c = 0; c < last.length; c++) {
+    if (last.charCodeAt(c) > 127 || /[A-Za-z]/.test(last.charAt(c))) return true
+  }
+  return false
+}
+
+function splitHostPort(authority) {
+  var colon = authority.lastIndexOf(":")
+  if (colon < 0) return { host: authority, port: "" }
+  if (authority.indexOf(":") !== colon) return null
+  var port = authority.slice(colon + 1)
+  if (!isPort(port)) return null
+  return { host: authority.slice(0, colon), port: port }
+}
+
+function bareWebUrl(target) {
+  var text = String(target || "").trim()
+  if (!text || /\s/.test(text)) return ""
+  var first = text.charAt(0)
+  if (first === "/" || first === "~" || first === "." || first === "-") return ""
+  if (text.indexOf("://") >= 0) return ""
+  if (/^javascript:/i.test(text)) return ""
+  var cut = text.search(/[/?#]/)
+  var authority = cut < 0 ? text : text.slice(0, cut)
+  var tail = cut < 0 ? "" : text.slice(cut)
+  if (!authority) return ""
+  var split = splitHostPort(authority)
+  if (!split || !split.host) return ""
+  if (!isIpv4(split.host) && !isDomain(split.host)) return ""
+  var scheme = split.host.toLowerCase() === "localhost" ? "http" : "https"
+  return scheme + "://" + split.host + (split.port ? ":" + split.port : "") + tail
+}
+
+// A query with no spaces that is a bare host, host:port, mailto:, tel:,
+// scheme://rest, or www plus a host (SPEC §7.5).
 function isUrlQuery(query) {
   var q = String(query || "").trim()
   if (!q || /\s/.test(q)) return false
+  if (/^javascript:/i.test(q)) return false
+  if (bareWebUrl(q)) return true
+  if (/^(mailto|tel):.+/i.test(q)) return true
   if (/^www\.[^\s./]+/i.test(q)) return true
   return /^[a-z][a-z0-9+.-]*:\/\/\S+$/i.test(q)
 }
 
 function normalizedUrl(query) {
   var q = String(query || "").trim()
-  if (/^www\./i.test(q)) return "https://" + q
+  var bare = bareWebUrl(q)
+  if (bare) return bare
+  if (/^(mailto|tel):.+/i.test(q)) return q
+  if (/^www\.[^\s./]+/i.test(q)) return "https://" + q
   return q
 }
 
