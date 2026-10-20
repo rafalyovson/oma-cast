@@ -79,6 +79,7 @@ To remove it: `oma-cast uninstall`.
 | `Ctrl+Shift+F` | Add to favorites (`Ctrl+Alt+↑↓` to reorder) |
 | `Ctrl+Shift+C` | Copy |
 | `Tab` / `Shift+Tab` | Move into and between a quicklink's arguments |
+| `Ctrl+V` | Paste into the search, a field or an argument |
 | `Ctrl+E` / `Ctrl+D` | Edit / delete a quicklink |
 | `Alt+Shift+D` | Disable a command |
 | `Esc` / `Shift+Esc` | Back / back to root |

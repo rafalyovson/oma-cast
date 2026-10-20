@@ -100,7 +100,7 @@ OverlayWindow {
     window.actionPanelOpen = false
     window.historyIndex = -1
     window.rebuild(true)
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    Qt.callLater(window.focusActive)
   }
 
   // The shell hid us: start the pop-to-root clock (SPEC §5.1).
@@ -400,6 +400,34 @@ OverlayWindow {
     window.argFocus = Math.max(-1, Math.min(window.selectedArgs.length - 1, index))
   }
 
+  onArgFocusChanged: Qt.callLater(window.focusActive)
+  onActionPanelOpenChanged: Qt.callLater(window.focusActive)
+
+  // The field the keyboard edits: an argument field or the search line.
+  function activeInput() {
+    if (window.actionPanelOpen) return actionPanel.input
+    var pill = window.argFocus >= 0 ? argRepeater.itemAt(window.argFocus) : null
+    return pill ? pill.input : queryInput
+  }
+
+  function focusActive() {
+    window.activeInput().forceActiveFocus()
+  }
+
+  // Ctrl+V, Ctrl+Shift+V and Shift+Insert: the clipboard as one line, over
+  // the selection. Edge line breaks are dropped, inner ones become spaces. [D]
+  function pasteClipboard() {
+    var text = String(Quickshell.clipboardText || "").replace(/^[\r\n]+|[\r\n]+$/g, "").replace(/[\x00-\x1f\x7f]+/g, " ")
+    if (window.view.kind === "confirm-delete" && !window.actionPanelOpen) return
+    if (window.view.kind === "alias" && window.argFocus < 0 && !window.actionPanelOpen) text = text.replace(/\s+/g, "")
+    var input = window.activeInput()
+    if (!text || input.readOnly) return
+    // Already one line, so LineInput never rewrites it and undo keeps working.
+    var at = input.selectionStart
+    if (input.selectionEnd > at) input.remove(at, input.selectionEnd)
+    input.insert(at, text)
+  }
+
   function setArgValue(index, text) {
     var values = window.argValues.slice()
     values[index] = text
@@ -454,9 +482,6 @@ OverlayWindow {
       return true
     }
     if (key === Qt.Key_Backspace && !value && !ctrl) { window.setArgFocus(window.argFocus - 1); return true }
-    // An edit key on an empty field must not fall through to the search text.
-    if (Util.editsFilter(event, value || " ")) { if (value) window.setArgValue(window.argFocus, Util.editedFilter(event, value)); return true }
-    if (window.isTyping(event)) { window.setArgValue(window.argFocus, value + event.text); return true }
     return false
   }
 
@@ -596,15 +621,18 @@ OverlayWindow {
     if (ctrl && key === Qt.Key_Minus) { window.setZoom(window.zoom - 0.1); return true }
     if (ctrl && key === Qt.Key_0) { window.setZoom(1); return true }
     if (ctrl && key === Qt.Key_BracketLeft) { window.pop(); return true }
+    // Ctrl+Shift+V is the terminal chord, so it pastes here too.
+    if (!alt && ((ctrl && key === Qt.Key_V) || (shift && !ctrl && key === Qt.Key_Insert))) { window.pasteClipboard(); return true }
+    // Ctrl+U clears the field, as in Omarchy's menu.
+    if (ctrl && !shift && !alt && key === Qt.Key_U) { window.activeInput().clear(); return true }
 
     if (window.actionPanelOpen) {
       if (ctrl && key === Qt.Key_K) { window.actionPanelOpen = false; return true }
       if (key === Qt.Key_Down || (ctrl && key === Qt.Key_N)) { actionPanel.move(1); return true }
       if (key === Qt.Key_Up || (ctrl && key === Qt.Key_P)) { actionPanel.move(-1); return true }
       if (enter) { actionPanel.activateSelected(); return true }
-      if (Util.editsFilter(event, actionPanel.filter)) { actionPanel.filter = Util.editedFilter(event, actionPanel.filter); return true }
-      if (window.isTyping(event)) { actionPanel.filter += event.text; return true }
-      return true
+      // The rest edit the filter; no launcher shortcut reaches the list behind.
+      return (event.modifiers & (Qt.AltModifier | Qt.MetaModifier)) !== 0
     }
 
     if (window.editor) {
@@ -631,7 +659,14 @@ OverlayWindow {
       if (key === Qt.Key_PageUp) { window.move(-8); return true }
       if (key === Qt.Key_PageDown) { window.move(8); return true }
       if (ctrl && shift && key === Qt.Key_F) { window.performIfOffered(["favorite-add", "favorite-remove"]); return true }
-      if (ctrl && shift && key === Qt.Key_C) { window.performIfOffered(["copy-command", "copy-id", "copy-link"]); return true }
+      // Ctrl+C and Ctrl+Shift+C copy the selected text, or else the item [O].
+      // Ctrl+X is always the field's cut: delete is Ctrl+D on Linux (SPEC §10.3).
+      if (ctrl && !alt && key === Qt.Key_C) {
+        var input = window.activeInput()
+        if (input.selectedText) input.copy()
+        else window.performIfOffered(["copy-command", "copy-id", "copy-link"])
+        return true
+      }
       if (ctrl && !shift && key === Qt.Key_E && window.performIfOffered(["edit-quicklink"])) return true
       if (ctrl && !shift && key === Qt.Key_D && window.performIfOffered(["delete-quicklink"])) return true
       if (alt && shift && key === Qt.Key_D) { window.performIfOffered(["disable"]); return true }
@@ -642,15 +677,9 @@ OverlayWindow {
       }
     }
 
-    if (Util.editsFilter(event, window.query)) { window.setQuery(Util.editedFilter(event, window.query)); return true }
-    if (key === Qt.Key_Backspace && !window.query && !window.atRoot && !window.formActive) { window.pop(); return true }
-    if (window.isTyping(event)) { window.setQuery(window.query + event.text); return true }
-    return false
-  }
-
-  function isTyping(event) {
-    return event.text && event.text.length === 1 && event.text.charCodeAt(0) >= 32 && event.text.charCodeAt(0) !== 127
-      && (event.modifiers === Qt.NoModifier || event.modifiers === Qt.ShiftModifier)
+    if (key === Qt.Key_Backspace && !ctrl && !window.query && window.argFocus < 0 && !window.atRoot && !window.formActive) { window.pop(); return true }
+    // Everything else edits the focused field; Alt and Super chords never do.
+    return (event.modifiers & (Qt.AltModifier | Qt.MetaModifier)) !== 0
   }
 
   // Ranking inputs changed (apps installed, guards answered, favourites
@@ -685,13 +714,12 @@ OverlayWindow {
     borderSpec: window.borderSpec
     clip: true
 
-    MouseArea { anchors.fill: parent; onClicked: { window.actionPanelOpen = false; keyCatcher.forceActiveFocus() } }
+    MouseArea { anchors.fill: parent; onClicked: { window.actionPanelOpen = false; window.focusActive() } }
 
+    // queryInput has focus and forwards every key here first.
     Item {
       id: keyCatcher
       anchors.fill: parent
-      focus: true
-      Keys.priority: Keys.BeforeItem
       Keys.onPressed: function(event) { if (window.handleKey(event)) event.accepted = true }
     }
 
@@ -733,38 +761,51 @@ OverlayWindow {
         }
       }
 
+      // The pills follow whichever of the two is showing.
+      readonly property Item shownText: (window.query || queryInput.preeditText) ? queryInput : queryText
+      readonly property real textRoom: header.width - queryText.x - window.px(20) - (argFields.visible ? argFields.width + window.px(14) : 0)
+
       Text {
         id: queryText
         textFormat: Text.PlainText
         anchors.left: lead.right
         anchors.leftMargin: window.px(12)
         anchors.verticalCenter: parent.verticalCenter
-        // Leaves room for the argument fields after it.
-        width: Math.max(0, Math.min(implicitWidth, header.width - x - window.px(20) - (argFields.visible ? argFields.width + window.px(14) : 0)))
-        text: window.query || window.placeholder
+        width: Math.max(0, Math.min(implicitWidth, header.textRoom))
+        visible: !window.query && !queryInput.preeditText
+        text: window.placeholder
         color: window.look.foreground
-        opacity: window.query ? 1 : 0.45
-        font.family: window.look.fontFamily
-        font.pixelSize: Math.round(Style.font.heading * 1.15 * window.zoom)
-        elide: Text.ElideLeft
+        opacity: 0.45
+        font: queryInput.font
+        elide: Text.ElideRight
       }
 
-      Rectangle {
-        width: Math.max(1, Style.space(2))
-        height: queryText.font.pixelSize + Style.space(4)
+      // The search line owns its text; window.query follows it, and code
+      // that sets window.query writes it back here.
+      LineInput {
+        id: queryInput
+        focus: true
+        anchors.left: queryText.left
         anchors.verticalCenter: parent.verticalCenter
-        x: queryText.x + (window.query ? Math.min(queryText.contentWidth, queryText.width) + Style.space(1) : 0)
-        color: window.look.accent
-        visible: window.shown && !window.actionPanelOpen && window.argFocus < 0
-
-        SequentialAnimation on opacity {
-          running: window.shown
-          loops: Animation.Infinite
-          NumberAnimation { to: 1; duration: 0 }
-          PauseAnimation { duration: 530 }
-          NumberAnimation { to: 0; duration: 0 }
-          PauseAnimation { duration: 530 }
+        width: Math.max(window.px(4), Math.min(implicitWidth + window.px(4), header.textRoom))
+        keyHandler: function(event) { return window.handleKey(event) }
+        // The action panel and the delete confirm type nowhere here, not even
+        // an input-method commit (Omarchy's menu does the same).
+        readOnly: window.actionPanelOpen || window.view.kind === "confirm-delete"
+        color: window.look.foreground
+        caretColor: window.look.accent
+        font.family: window.look.fontFamily
+        font.pixelSize: Math.round(Style.font.heading * 1.15 * window.zoom)
+        onTextChanged: {
+          if (window.view.kind === "alias" && /\s/.test(text)) { text = text.replace(/\s+/g, ""); return }
+          if (text !== window.query) window.setQuery(text)
         }
+        onActiveFocusChanged: if (activeFocus && window.argFocus >= 0) window.setArgFocus(-1)
+      }
+
+      Connections {
+        target: window
+        function onQueryChanged() { if (queryInput.text !== window.query) queryInput.text = window.query }
       }
 
       // The selected quicklink's arguments, inline after the search text [O].
@@ -774,64 +815,64 @@ OverlayWindow {
         visible: window.selectedArgs.length > 0 && !window.editor
         spacing: window.px(8)
         anchors.verticalCenter: parent.verticalCenter
-        x: queryText.x + Math.min(queryText.contentWidth, queryText.width) + window.px(14)
+        x: queryText.x + Math.min(header.shownText.contentWidth, header.shownText.width) + window.px(14)
 
         Repeater {
-          model: argFields.visible ? window.selectedArgs : []
+          id: argRepeater
+          // A count, so a refresh that re-reads the same arguments keeps the
+          // fields (and the focus inside one).
+          model: argFields.visible ? window.selectedArgs.length : 0
+          onItemRemoved: Qt.callLater(window.focusActive)
 
           delegate: Rectangle {
             id: argField
-            required property var modelData
             required property int index
+            readonly property var modelData: window.selectedArgs[index] || { name: "", defaultValue: "", options: [] }
             readonly property bool focused: window.argFocus === index
             readonly property string value: String(window.argValues[index] || "")
             readonly property string hint: modelData.options.length ? modelData.name + " ▾" : (modelData.defaultValue || modelData.name)
+            readonly property alias input: argInput
 
             height: window.px(30)
-            width: Math.min(window.px(170), Math.max(window.px(64), argText.implicitWidth + window.px(22)))
+            width: Math.min(window.px(170), Math.max(window.px(64), Math.max(argInput.implicitWidth, argHint.implicitWidth) + window.px(2)))
             radius: Math.max(Style.cornerRadius, window.px(6))
             color: focused ? Util.alpha(window.look.accent, 0.12) : "transparent"
             border.width: Math.max(1, Style.space(1))
             border.color: focused ? window.look.accent : Util.alpha(window.look.foreground, 0.25)
 
             Text {
-              id: argText
+              id: argHint
               textFormat: Text.PlainText
-              anchors.left: parent.left
-              anchors.leftMargin: window.px(11)
-              anchors.verticalCenter: parent.verticalCenter
-              width: parent.width - window.px(22)
-              text: argField.value || argField.hint
+              anchors.fill: argInput
+              leftPadding: argInput.leftPadding
+              rightPadding: argInput.rightPadding
+              verticalAlignment: Text.AlignVCenter
+              visible: !argField.value && !argInput.preeditText
+              text: argField.hint
               color: window.look.foreground
-              opacity: argField.value ? 1 : 0.45
+              opacity: 0.45
+              font: argInput.font
+              elide: Text.ElideRight
+            }
+
+            // Fills the pill, so a click anywhere on it lands in the field.
+            LineInput {
+              id: argInput
+              anchors.fill: parent
+              leftPadding: window.px(11)
+              rightPadding: window.px(11)
+              keyHandler: function(event) { return window.handleKey(event) }
+              readOnly: window.actionPanelOpen
+              color: window.look.foreground
+              caretColor: window.look.accent
               font.family: window.look.fontFamily
               font.pixelSize: Math.round(Style.font.heading * 0.9 * window.zoom)
-              elide: Text.ElideLeft
+              Component.onCompleted: text = argField.value
+              onTextChanged: if (text !== argField.value) window.setArgValue(argField.index, text)
+              onActiveFocusChanged: if (activeFocus && window.argFocus !== argField.index) window.setArgFocus(argField.index)
             }
 
-            Rectangle {
-              width: Math.max(1, Style.space(2))
-              height: argText.font.pixelSize + Style.space(2)
-              anchors.verticalCenter: parent.verticalCenter
-              x: argText.x + (argField.value ? Math.min(argText.contentWidth, argText.width) + Style.space(1) : 0)
-              color: window.look.accent
-              visible: argField.focused && window.shown && !window.actionPanelOpen
-
-              SequentialAnimation on opacity {
-                running: argField.focused && window.shown
-                loops: Animation.Infinite
-                NumberAnimation { to: 1; duration: 0 }
-                PauseAnimation { duration: 530 }
-                NumberAnimation { to: 0; duration: 0 }
-                PauseAnimation { duration: 530 }
-              }
-            }
-
-            MouseArea {
-              anchors.fill: parent
-              cursorShape: Qt.IBeamCursor
-              onClicked: { window.setArgFocus(argField.index); keyCatcher.forceActiveFocus() }
-            }
+            onValueChanged: if (argInput.text !== value) argInput.text = value
           }
         }
       }
@@ -1128,6 +1169,7 @@ OverlayWindow {
       anchors.bottom: footer.top
       anchors.bottomMargin: window.px(6)
       actions: window.actions
+      keyHandler: function(event) { return window.handleKey(event) }
       look: window.look
       zoom: window.zoom
       onActivated: function(actionId) { window.perform(actionId) }

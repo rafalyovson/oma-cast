@@ -11,6 +11,8 @@ Rectangle {
   property int selectedIndex: 0
   property var look: null
   property real zoom: 1
+  property var keyHandler: null     // the launcher's keys come first
+  readonly property alias input: filterInput
 
   signal activated(string actionId)
 
@@ -33,7 +35,10 @@ Rectangle {
     if (a) panel.activated(a.id)
   }
 
-  onFilterChanged: selectedIndex = 0
+  onFilterChanged: {
+    selectedIndex = 0
+    if (filterInput.text !== filter) filterInput.text = filter
+  }
   onActionsChanged: selectedIndex = 0
 
   width: px(340)
@@ -148,18 +153,31 @@ Rectangle {
     height: panel.px(38)
 
     Text {
+      anchors.fill: filterInput
+      verticalAlignment: Text.AlignVCenter
+      textFormat: Text.PlainText
+      visible: !panel.filter && !filterInput.preeditText
+      text: "Search for actions…"
+      opacity: 0.45
+      color: panel.look.foreground
+      elide: Text.ElideRight
+      font: filterInput.font
+    }
+
+    LineInput {
+      id: filterInput
       anchors.left: parent.left
       anchors.leftMargin: panel.px(14)
       anchors.right: parent.right
       anchors.rightMargin: panel.px(14)
       anchors.verticalCenter: parent.verticalCenter
-      textFormat: Text.PlainText
-      text: panel.filter || "Search for actions…"
-      opacity: panel.filter ? 1 : 0.45
+      height: parent.height
+      keyHandler: panel.keyHandler
       color: panel.look.foreground
-      elide: Text.ElideLeft
+      caretColor: panel.look.accent
       font.family: panel.look.fontFamily
       font.pixelSize: Math.round(Style.font.body * panel.zoom)
+      onTextChanged: if (text !== panel.filter) panel.filter = text
     }
   }
 }
