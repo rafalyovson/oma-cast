@@ -437,6 +437,22 @@ test("a different letter case is stored as the installed entry's id", () => {
   assert.ok(choices.some((row) => row.id === "firefox.desktop"))
 })
 
+test("choosing an Open With app closes the list and keeps the app icon", () => {
+  assert.deepEqual(QL.afterOpenWithPick(3, 1), { focus: 2, listOpen: false })
+  assert.deepEqual(QL.afterOpenWithPick(3, 2), { focus: 2, listOpen: false })
+  const apps = [{ id: "firefox", name: "Firefox", icon: "firefox" }]
+  assert.deepEqual(QL.openWithIcon(apps, ""), { iconName: "", glyph: "\uf0ac" })
+  assert.deepEqual(QL.openWithIcon(apps, "firefox.desktop"), { iconName: "firefox", glyph: "" })
+  assert.deepEqual(QL.openWithIcon(null, "firefox.desktop"), { iconName: "", glyph: "" })
+  assert.deepEqual(QL.openWithIcon([], "gone.desktop"), { iconName: "", glyph: "" })
+  const fs = require("node:fs")
+  const path = require("node:path")
+  const qml = fs.readFileSync(path.join(__dirname, "../plugin/ui/LauncherWindow.qml"), "utf8")
+  assert.match(qml, /openWithListDismissed/)
+  assert.match(qml, /Quicklinks\.afterOpenWithPick/)
+  assert.match(qml, /copy\.iconName = String\(row\.iconName/)
+})
+
 test("Open With says Enter selects the app and Ctrl+Enter saves", () => {
   const fs = require("node:fs")
   const path = require("node:path")
