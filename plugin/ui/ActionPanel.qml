@@ -11,6 +11,8 @@ Rectangle {
   property int selectedIndex: 0
   property var look: null
   property real zoom: 1
+  property var keyHandler: null
+  property var pasteHandler: null
 
   signal activated(string actionId)
 
@@ -32,6 +34,8 @@ Rectangle {
     var a = panel.visibleActions[panel.selectedIndex]
     if (a) panel.activated(a.id)
   }
+
+  readonly property alias filterField: filterInput
 
   onFilterChanged: selectedIndex = 0
   onActionsChanged: selectedIndex = 0
@@ -55,6 +59,7 @@ Rectangle {
     clip: true
     model: panel.visibleActions
     boundsBehavior: Flickable.StopAtBounds
+    onActiveFocusChanged: if (list.activeFocus) filterInput.forceActiveFocus()
 
     delegate: Item {
       required property var modelData
@@ -147,19 +152,39 @@ Rectangle {
     anchors.bottom: parent.bottom
     height: panel.px(38)
 
-    Text {
+    TextInput {
+      id: filterInput
       anchors.left: parent.left
       anchors.leftMargin: panel.px(14)
       anchors.right: parent.right
       anchors.rightMargin: panel.px(14)
       anchors.verticalCenter: parent.verticalCenter
-      textFormat: Text.PlainText
-      text: panel.filter || "Search for actions…"
-      opacity: panel.filter ? 1 : 0.45
+      height: parent.height
+      clip: true
+      selectByMouse: true
+      persistentSelection: true
       color: panel.look.foreground
-      elide: Text.ElideLeft
+      selectionColor: panel.look.selectedBackground
+      selectedTextColor: panel.look.foreground
       font.family: panel.look.fontFamily
       font.pixelSize: Math.round(Style.font.body * panel.zoom)
+      verticalAlignment: TextInput.AlignVCenter
+      placeholderText: "Search for actions…"
+      placeholderTextColor: Util.alpha(panel.look.foreground, 0.45)
+      cursorDelegate: Rectangle {
+        width: Math.max(1, Style.space(2))
+        color: panel.look.accent
+        visible: filterInput.cursorVisible
+      }
+      Keys.priority: Keys.BeforeItem
+      Keys.onPressed: function(event) { if (panel.keyHandler && panel.keyHandler(event)) event.accepted = true }
+      onTextEdited: panel.filter = text
+
+      TapHandler {
+        acceptedButtons: Qt.MiddleButton
+        gesturePolicy: TapHandler.ReleaseWithinBounds
+        onTapped: if (panel.pasteHandler) panel.pasteHandler(filterInput)
+      }
     }
   }
 }

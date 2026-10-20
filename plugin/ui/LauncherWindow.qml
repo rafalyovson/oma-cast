@@ -1,16 +1,19 @@
 import QtQuick
 import Quickshell
+import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
+import "../core/InputKeys.js" as InputKeys
 
 // Launcher surface (SPEC §5.1, §10.2): 750×475 at uiZoom 1, 66 px search
 // header, 42 px footer, centred horizontally about a quarter down the
 // screen, coloured by the active Omarchy theme's [menu] tokens.
 //
 // Views form a navigation stack: root search, a pushed Omarchy submenu, or
-// the alias editor. Each view keeps its own query.
+// the alias editor. Each view keeps its own query. The header TextInput is
+// that query. The action panel has its own TextInput for its filter.
 OverlayWindow {
   id: window
 
@@ -46,6 +49,7 @@ OverlayWindow {
   property int selectedIndex: -1
   property var selectedRow: null
   property bool actionPanelOpen: false
+  onActionPanelOpenChanged: Qt.callLater(window.focusField)
   property var actions: []
   property var toast: null
   property int historyIndex: -1
@@ -75,13 +79,14 @@ OverlayWindow {
     if (typeof payload.query === "string") window.query = payload.query
     window.actionPanelOpen = false
     window.historyIndex = -1
+    window.mirrorQuery()
     window.rebuild(true)
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+    window.focusField()
   }
 
   // The shell hid us: start the pop-to-root clock (SPEC §5.1).
   onShownChanged: {
-    if (window.shown) return
+    if (window.shown) { window.focusField(); return }
     window.actionPanelOpen = false
     var seconds = Number(window.general.popToRootTimeout)
     if (!(seconds > 0)) window.popToRoot()
@@ -96,6 +101,7 @@ OverlayWindow {
   function popToRoot() {
     window.stack = [{ kind: "root", title: "oma-cast", query: "" }]
     window.query = ""
+    window.mirrorQuery()
     window.rebuild(true)
   }
 
@@ -106,6 +112,7 @@ OverlayWindow {
     saved[saved.length - 1] = Object.assign({}, window.view, { query: window.query, selectedIndex: window.selectedIndex })
     window.stack = saved.concat([next])
     window.query = next.kind === "alias" ? (next.value || "") : ""
+    window.mirrorQuery()
     window.rebuild(true)
   }
 
@@ -115,6 +122,7 @@ OverlayWindow {
     var top = next[next.length - 1]
     window.stack = next
     window.query = top.query || ""
+    window.mirrorQuery()
     window.rebuild(false)
     if (top.selectedIndex >= 0) window.select(top.selectedIndex)
   }
@@ -254,7 +262,9 @@ OverlayWindow {
     if (window.actionPanelOpen) { window.actionPanelOpen = false; return }
     window.actions = window.actionsForSelected()
     actionPanel.filter = ""
+    if (actionPanel.filterField) actionPanel.filterField.text = ""
     window.actionPanelOpen = window.actions.length > 0
+    window.focusField()
   }
 
   function saveAlias() {
@@ -287,10 +297,92 @@ OverlayWindow {
   // ----------------------------------------------------------- the query
 
   function setQuery(next) {
+    var same = window.query === next
+    window.query = next
+    window.mirrorQuery()
+    if (same) return
+    window.historyIndex = -1
+    window.rebuild(true)
+  }
+
+  function queryEdited(next) {
     if (window.query === next) return
     window.query = next
     window.historyIndex = -1
     window.rebuild(true)
+  }
+
+  function mirrorQuery() {
+    if (!queryInput || queryInput.text === window.query) return
+    queryInput.text = window.query
+    queryInput.cursorPosition = queryInput.text.length
+  }
+
+  function activeField() {
+    if (window.actionPanelOpen && actionPanel.filterField) return actionPanel.filterField
+    return queryInput
+  }
+
+  // OverlayWindow uses Exclusive keyboard focus while it is shown. The field
+  // has to be the Qt focus item before that grant, or the first keys are lost.
+  function focusField() {
+    var field = window.activeField()
+    if (field) field.forceActiveFocus()
+  }
+
+  function clearActiveText() {
+    if (window.actionPanelOpen) {
+      actionPanel.filter = ""
+      if (actionPanel.filterField) actionPanel.filterField.text = ""
+      return
+    }
+    window.setQuery("")
+  }
+
+  function readQtClipboard() {
+    clipboardProbe.text = ""
+    clipboardProbe.paste()
+    var got = clipboardProbe.text
+    clipboardProbe.text = ""
+    return got
+  }
+
+  function insertInto(field, incoming) {
+    if (!field) return
+    var blockSpace = field === queryInput && window.view.kind === "alias"
+    var shaped = InputKeys.shapePaste(incoming, blockSpace)
+    if (!shaped) return
+    var next = InputKeys.applyPaste(field.text, field.selectionStart, field.selectionEnd, shaped)
+    field.text = next.text
+    field.cursorPosition = next.cursor
+    if (field === queryInput) window.queryEdited(next.text)
+    else actionPanel.filter = next.text
+  }
+
+  function startFieldPaste(field, primary) {
+    if (!field || fieldPaste.running) return
+    fieldPaste.target = field
+    fieldPaste.prior = String(fieldPasteOut.text || "")
+    fieldPaste.command = primary
+      ? ["wl-paste", "-n", "--primary", "--type", "text/plain"]
+      : ["wl-paste", "-n", "--type", "text/plain"]
+    fieldPaste.running = true
+  }
+
+  function pasteInto(primary, field) {
+    if (!field) field = window.activeField()
+    if (!field) return
+    if (primary) {
+      var before = field.text
+      Qt.callLater(function() {
+        if (field.text !== before) return
+        window.startFieldPaste(field, true)
+      })
+      return
+    }
+    var plan = InputKeys.pastePlan(window.readQtClipboard())
+    if (plan.external) window.startFieldPaste(field, false)
+    else window.insertInto(field, plan.text)
   }
 
   // ↑ on an empty root walks back through queries that launched something.
@@ -301,6 +393,7 @@ OverlayWindow {
     var next = Math.max(-1, Math.min(history.length - 1, window.historyIndex + direction))
     if (next === window.historyIndex) return true
     window.query = next < 0 ? "" : history[next]
+    window.mirrorQuery()
     window.rebuild(true)
     window.historyIndex = next
     return true
@@ -332,22 +425,33 @@ OverlayWindow {
     var key = event.key
     var enter = key === Qt.Key_Return || key === Qt.Key_Enter
 
-    if (key === Qt.Key_Escape) { window.handleEscape(shift); return true }
+    if (key === Qt.Key_Escape) { window.handleEscape(shift); window.focusField(); return true }
     // Zoom in / out / reset (SPEC §10.3), persisted as uiZoom. [I] step 0.1
     if (ctrl && (key === Qt.Key_Plus || key === Qt.Key_Equal)) { window.setZoom(window.zoom + 0.1); return true }
     if (ctrl && key === Qt.Key_Minus) { window.setZoom(window.zoom - 0.1); return true }
     if (ctrl && key === Qt.Key_0) { window.setZoom(1); return true }
     if (ctrl && key === Qt.Key_BracketLeft) { window.pop(); return true }
+    if (key === Qt.Key_Tab || key === Qt.Key_Backtab) return true
 
     if (window.actionPanelOpen) {
       if (ctrl && key === Qt.Key_K) { window.actionPanelOpen = false; return true }
       if (key === Qt.Key_Down || (ctrl && key === Qt.Key_N)) { actionPanel.move(1); return true }
       if (key === Qt.Key_Up || (ctrl && key === Qt.Key_P)) { actionPanel.move(-1); return true }
       if (enter) { actionPanel.activateSelected(); return true }
-      if (Util.editsFilter(event, actionPanel.filter)) { actionPanel.filter = Util.editedFilter(event, actionPanel.filter); return true }
-      if (window.isTyping(event)) { actionPanel.filter += event.text; return true }
-      return true
     }
+
+    var owned = InputKeys.owner(event, window.actionPanelOpen ? actionPanel.filter : window.query, {
+      blockSpace: !window.actionPanelOpen && window.view.kind === "alias"
+    })
+    if (owned === "paste") { window.pasteInto(false); return true }
+    if (owned === "clear") { window.clearActiveText(); return true }
+    if (owned === "field") return false
+    if (owned === "backspace-empty") {
+      if (window.actionPanelOpen) return true
+      if (!window.atRoot) { window.pop(); return true }
+      return false
+    }
+    if (window.actionPanelOpen) return true
 
     if (window.view.kind === "alias") {
       if (enter) { window.saveAlias(); return true }
@@ -381,15 +485,7 @@ OverlayWindow {
       }
     }
 
-    if (Util.editsFilter(event, window.query)) { window.setQuery(Util.editedFilter(event, window.query)); return true }
-    if (key === Qt.Key_Backspace && !window.query && !window.atRoot) { window.pop(); return true }
-    if (window.isTyping(event)) { window.setQuery(window.query + event.text); return true }
     return false
-  }
-
-  function isTyping(event) {
-    return event.text && event.text.length === 1 && event.text.charCodeAt(0) >= 32 && event.text.charCodeAt(0) !== 127
-      && (event.modifiers === Qt.NoModifier || event.modifiers === Qt.ShiftModifier)
   }
 
   // Ranking inputs changed (apps installed, guards answered, favourites
@@ -418,15 +514,7 @@ OverlayWindow {
     borderSpec: window.borderSpec
     clip: true
 
-    MouseArea { anchors.fill: parent; onClicked: { window.actionPanelOpen = false; keyCatcher.forceActiveFocus() } }
-
-    Item {
-      id: keyCatcher
-      anchors.fill: parent
-      focus: true
-      Keys.priority: Keys.BeforeItem
-      Keys.onPressed: function(event) { if (window.handleKey(event)) event.accepted = true }
-    }
+    MouseArea { anchors.fill: parent; onClicked: { window.actionPanelOpen = false; window.focusField() } }
 
     // -------------------------------------------------------- header
     Item {
@@ -466,37 +554,40 @@ OverlayWindow {
         }
       }
 
-      Text {
-        id: queryText
-        textFormat: Text.PlainText
+      TextInput {
+        id: queryInput
         anchors.left: lead.right
         anchors.leftMargin: window.px(12)
         anchors.right: parent.right
         anchors.rightMargin: window.px(20)
         anchors.verticalCenter: parent.verticalCenter
-        text: window.query || window.placeholder
+        height: parent.height
+        clip: true
+        focus: true
+        activeFocusOnPress: true
+        selectByMouse: true
+        persistentSelection: true
         color: window.look.foreground
-        opacity: window.query ? 1 : 0.45
+        selectionColor: window.look.selectedBackground
+        selectedTextColor: window.look.foreground
         font.family: window.look.fontFamily
         font.pixelSize: Math.round(Style.font.heading * 1.15 * window.zoom)
-        elide: Text.ElideLeft
-      }
+        verticalAlignment: TextInput.AlignVCenter
+        placeholderText: window.placeholder
+        placeholderTextColor: Util.alpha(window.look.foreground, 0.45)
+        cursorDelegate: Rectangle {
+          width: Math.max(1, Style.space(2))
+          color: window.look.accent
+          visible: queryInput.cursorVisible
+        }
+        Keys.priority: Keys.BeforeItem
+        Keys.onPressed: function(event) { if (window.handleKey(event)) event.accepted = true }
+        onTextEdited: window.queryEdited(text)
 
-      Rectangle {
-        width: Math.max(1, Style.space(2))
-        height: queryText.font.pixelSize + Style.space(4)
-        anchors.verticalCenter: parent.verticalCenter
-        x: queryText.x + (window.query ? Math.min(queryText.contentWidth, queryText.width) + Style.space(1) : 0)
-        color: window.look.accent
-        visible: window.shown && !window.actionPanelOpen
-
-        SequentialAnimation on opacity {
-          running: window.shown
-          loops: Animation.Infinite
-          NumberAnimation { to: 1; duration: 0 }
-          PauseAnimation { duration: 530 }
-          NumberAnimation { to: 0; duration: 0 }
-          PauseAnimation { duration: 530 }
+        TapHandler {
+          acceptedButtons: Qt.MiddleButton
+          gesturePolicy: TapHandler.ReleaseWithinBounds
+          onTapped: window.pasteInto(true, queryInput)
         }
       }
 
@@ -547,6 +638,7 @@ OverlayWindow {
         clip: true
         model: rows
         boundsBehavior: Flickable.StopAtBounds
+        onActiveFocusChanged: if (list.activeFocus) window.focusField()
 
         delegate: ResultRow {
           selected: index === window.selectedIndex
@@ -714,6 +806,33 @@ OverlayWindow {
       look: window.look
       zoom: window.zoom
       onActivated: function(actionId) { window.perform(actionId) }
+      keyHandler: function(event) { return window.handleKey(event) }
+      pasteHandler: function(field) { window.pasteInto(true, field) }
+    }
+  }
+
+  TextInput {
+    id: clipboardProbe
+    visible: false
+    width: 0
+    height: 0
+    focus: false
+  }
+
+  Process {
+    id: fieldPaste
+    property var target: null
+    property string prior: ""
+    stdout: StdioCollector { id: fieldPasteOut }
+    onExited: function(exitCode) {
+      var field = fieldPaste.target
+      var prior = fieldPaste.prior
+      fieldPaste.target = null
+      if (exitCode !== 0 || !field) return
+      var all = String(fieldPasteOut.text || "")
+      var chunk = all.indexOf(prior) === 0 ? all.slice(prior.length) : all
+      fieldPaste.prior = all
+      window.insertInto(field, chunk)
     }
   }
 }
