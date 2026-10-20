@@ -77,12 +77,15 @@ else
   # The clock starts as the CLI is spawned, so a healthPing pass measures that
   # startup and is subtracted. The layer event is the first one at or after
   # that stamp. Each toggle hides as soon as the layer maps, which is before
-  # the 500 ms refresh deferral, so the timer itself does not fire during a
-  # sample. That hide runs the pending refresh, and the next toggle can
+  # the 500 ms refresh deferral, so that timer does not fire during a sample.
+  # Hide schedules the refresh about 150 ms later, and the next toggle can
   # overlap those scripts. The recorded time still ends at the layer event.
   events=$(mktemp)
   fifo=$(mktemp -u)
-  mkfifo "$fifo"
+  if ! mkfifo "$fifo"; then
+    bad "could not create the latency fifo"
+    rm -f "$events" "$fifo"
+  else
   socat_pid=""
   reader_pid=""
   cleanup_latency() {
@@ -146,35 +149,61 @@ else
     hides+=($(( (close - t1) / 1000000 )))
   done
 
-  # One show that stays up until the deferred refresh has started, then a
-  # following show. Reported on its own, not folded into the 21 toggles.
-  t_hold=$(date +%s%N)
-  $cli show >/dev/null
-  held=""
-  for _ in $(seq 1 100); do
-    held=$(match_event openlayer "$t_hold" || true)
-    [[ -n $held ]] && break
-    sleep 0.01
+  # Five shows that stay up until the deferred refresh has started, then a
+  # following show. Median minus the healthPing baseline. Not folded into
+  # the 21 toggles. A missing layer event fails the run.
+  refresh_shows=()
+  refresh_missed=0
+  for j in $(seq 1 5); do
+    t_hold=$(date +%s%N)
+    $cli show >/dev/null
+    held=""
+    for _ in $(seq 1 100); do
+      held=$(match_event openlayer "$t_hold" || true)
+      [[ -n $held ]] && break
+      sleep 0.01
+    done
+    if [[ -z $held ]]; then
+      refresh_missed=1
+      bad "refresh run $j: launcher did not map"
+      $cli hide >/dev/null 2>&1 || true
+      continue
+    fi
+    sleep 0.7
+    t_hide=$(date +%s%N)
+    $cli hide >/dev/null
+    closed=""
+    for _ in $(seq 1 100); do
+      closed=$(match_event closelayer "$t_hide" || true)
+      [[ -n $closed ]] && break
+      sleep 0.01
+    done
+    t_follow=$(date +%s%N)
+    $cli show >/dev/null
+    followed=""
+    for _ in $(seq 1 100); do
+      followed=$(match_event openlayer "$t_follow" || true)
+      [[ -n $followed ]] && break
+      sleep 0.01
+    done
+    $cli hide >/dev/null
+    if [[ -z $followed ]]; then
+      refresh_missed=1
+      bad "refresh run $j: no layer event after the refresh had started"
+      continue
+    fi
+    refresh_shows+=($(( (followed - t_follow) / 1000000 )))
   done
-  sleep 0.7
-  $cli hide >/dev/null
-  t_follow=$(date +%s%N)
-  $cli show >/dev/null
-  followed=""
-  for _ in $(seq 1 100); do
-    followed=$(match_event openlayer "$t_follow" || true)
-    [[ -n $followed ]] && break
-    sleep 0.01
-  done
-  $cli hide >/dev/null
-  if [[ -n $followed ]]; then
-    refresh_show=$(( (followed - t_follow) / 1000000 ))
+
+  read -r ping_med ping_p95 < <(percentile_stats "${pings[@]}")
+  if (( refresh_missed != 0 || ${#refresh_shows[@]} != 5 )); then
+    bad "show after the refresh had started: sample missing"
   else
-    refresh_show=""
+    read -r refresh_med _ < <(percentile_stats "${refresh_shows[@]}")
+    printf '        show after the refresh had started: median %4d ms (5 runs, minus baseline)\n' "$(( refresh_med - ping_med ))"
   fi
 
   if (( missed == 0 )); then
-    read -r ping_med ping_p95 < <(percentile_stats "${pings[@]}")
     read -r show_med show_p95 < <(percentile_stats "${shows[@]}")
     read -r hide_med hide_p95 < <(percentile_stats "${hides[@]}")
     printf '        healthPing baseline  median %4d ms  p95 %4d ms\n' "$ping_med" "$ping_p95"
@@ -183,13 +212,8 @@ else
     printf '        show minus baseline  median %4d ms  p95 %4d ms\n' "$(( show_med - ping_med ))" "$(( show_p95 - ping_med ))"
     printf '        hide minus baseline  median %4d ms  p95 %4d ms\n' "$(( hide_med - ping_med ))" "$(( hide_p95 - ping_med ))"
     echo "        note: the 21 toggles hide when the layer maps, before the 500 ms deferral."
-    echo "        that hide runs the pending refresh, so a later toggle can overlap the scripts."
+    echo "        that hide schedules the refresh about 150 ms later, so a later toggle can overlap the scripts."
     echo "        those times stop at the layer event and do not wait for the scripts to finish."
-    if [[ -n $refresh_show ]]; then
-      printf '        show after the refresh had started: %4d ms\n' "$refresh_show"
-    else
-      echo "        show after the refresh had started: no layer event"
-    fi
     # Two passes, with oma-cast reload between them, compare main and this
     # branch. Alternating every toggle would reload QML and time the reload.
     show_adj=$(( show_p95 - ping_med ))
@@ -201,6 +225,7 @@ else
     fi
   fi
   cleanup_latency
+  fi
 fi
 
 exit $fail

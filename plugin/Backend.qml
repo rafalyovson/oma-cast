@@ -631,21 +631,30 @@ Item {
 
   // Guards and providers describe live system state. Wait until the layer
   // has mapped so the scripts do not compete with opening. A hide while
-  // that refresh is still waiting runs it immediately; cancelling it would
-  // leave checks, hidden items, and disabled states stale.
+  // that refresh is still waiting runs it 150 ms later, so a toggle that
+  // just launched can finish before the guards record its state. Cancelling
+  // it would leave checks, hidden items, and disabled states stale.
   Component.onDestruction: { settingsStore.flush(); frecencyStore.flush(); quicklinksStore.flush() }
   onNotification: function(method, data) {
     if (method !== "window.visibilityChanged") return
-    if (data && data.visible) menuRefreshTimer.restart()
-    else if (menuRefreshTimer.running) {
+    if (data && data.visible) {
+      hideRefreshTimer.stop()
+      menuRefreshTimer.restart()
+    } else if (menuRefreshTimer.running) {
       menuRefreshTimer.stop()
-      menuSource.refresh()
+      hideRefreshTimer.restart()
     }
   }
 
   Timer {
     id: menuRefreshTimer
     interval: 500
+    onTriggered: menuSource.refresh()
+  }
+
+  Timer {
+    id: hideRefreshTimer
+    interval: 150
     onTriggered: menuSource.refresh()
   }
 

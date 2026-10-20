@@ -31,8 +31,8 @@ Item {
   }
 
   // Re-answer guards and re-run providers. Skipped while a run is in flight.
-  // The launcher calls this after the window has mapped, or on hide if that
-  // call is still waiting.
+  // The launcher calls this after the window has mapped, or about 150 ms
+  // after hide if that call is still waiting.
   function refresh() {
     if (!guardProc.running) {
       var script = OmarchyMenu.guardScript(source.tree)
