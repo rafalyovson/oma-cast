@@ -1,3 +1,5 @@
+process.env.TZ = "UTC"
+
 const test = require("node:test")
 const assert = require("node:assert/strict")
 const Migrate = require("../plugin/core/Migrate.js")
@@ -169,18 +171,18 @@ test("expand percent-encodes values unless the placeholder says raw", () => {
   assert.equal(QL.expand("{clipboard | nosuch}", { clipboard: "x" }).ok, false)
 })
 
-test("date, time, and weekday placeholders use the given clock", () => {
-  const zone = { timeZone: "UTC" }
-  assert.equal(QL.expand('{date format="yyyy-MM-dd" | raw}', Object.assign({ now: JUNE15 }, zone)).url, "2022-06-15")
-  assert.equal(QL.expand('{date format="yyyy-MM-dd" offset="+1d" | raw}', Object.assign({ now: JUNE15 }, zone)).url, "2022-06-16")
-  assert.equal(QL.expand('{date "yyyy-MM-dd" +1d | raw}', Object.assign({ now: JUNE15 }, zone)).url, "2022-06-16")
-  assert.equal(QL.expand("{date | raw}", Object.assign({ now: JUNE1_NOON }, zone)).url, "1 Jun 2022")
-  assert.equal(QL.expand("{time | raw}", Object.assign({ now: JUNE15_1505 }, zone)).url, "3:05 pm")
-  assert.equal(QL.expand("{datetime | raw}", Object.assign({ now: JUNE1_1845 }, zone)).url, "1 Jun 2022 at 6:45 pm")
-  assert.equal(QL.expand("{day | raw}", Object.assign({ now: JUNE15 }, zone)).url, "Wednesday")
-  assert.match(QL.expand('{date locale="fr-FR" | raw}', Object.assign({ now: JUNE15 }, zone)).url, /juin/)
-  assert.equal(QL.expand('{date format="yyyy" locale="fr-FR" | raw}', Object.assign({ now: JUNE15 }, zone)).ok, false)
-  assert.equal(QL.expand('{date offset="+ 2d" | raw}', Object.assign({ now: JUNE15 }, zone)).ok, false)
+test("date, time, and weekday placeholders use the local clock", () => {
+  assert.equal(QL.expand('{date format="yyyy-MM-dd" | raw}', { now: JUNE15 }).url, "2022-06-15")
+  assert.equal(QL.expand('{date format="yyyy-MM-dd" | raw}', { now: JUNE15, timeZone: "Pacific/Kiritimati" }).url, "2022-06-15")
+  assert.equal(QL.expand('{date format="yyyy-MM-dd" offset="+1d" | raw}', { now: JUNE15 }).url, "2022-06-16")
+  assert.equal(QL.expand('{date "yyyy-MM-dd" +1d | raw}', { now: JUNE15 }).url, "2022-06-16")
+  assert.equal(QL.expand("{date | raw}", { now: JUNE1_NOON }).url, "1 Jun 2022")
+  assert.equal(QL.expand("{time | raw}", { now: JUNE15_1505 }).url, "3:05 pm")
+  assert.equal(QL.expand("{datetime | raw}", { now: JUNE1_1845 }).url, "1 Jun 2022 at 6:45 pm")
+  assert.equal(QL.expand("{day | raw}", { now: JUNE15 }).url, "Wednesday")
+  assert.match(QL.expand('{date locale="fr-FR" | raw}', { now: JUNE15 }).url, /juin/)
+  assert.equal(QL.expand('{date format="yyyy" locale="fr-FR" | raw}', { now: JUNE15 }).ok, false)
+  assert.equal(QL.expand('{date offset="+ 2d" | raw}', { now: JUNE15 }).ok, false)
 })
 
 test("uuid is filled in, and snippet, calculator, cursor, and browser-tab are refused", () => {
@@ -189,25 +191,30 @@ test("uuid is filled in, and snippet, calculator, cursor, and browser-tab are re
   for (const link of ["{cursor}", "{browser-tab}", '{snippet name="Hi"}', '{calculator expression="1+1"}']) {
     assert.equal(QL.expand(link, {}).ok, false, link)
   }
-  const kept = QL.expand("keep {date\n}", { now: JUNE15, timeZone: "UTC" })
+  const kept = QL.expand("keep {date\n}", { now: JUNE15 })
   assert.equal(kept.ok, true)
   assert.equal(kept.url, "keep {date\n}")
 })
 
-test("opening uses xdg-open, or gio launch when an app is chosen", () => {
+test("opening uses xdg-open, or uwsm-app gtk-launch when an app is chosen", () => {
   assert.deepEqual(QL.openArgv("", "https://example.com"), ["xdg-open", "https://example.com"])
-  assert.deepEqual(QL.openArgv("firefox.desktop", "https://example.com"), ["gio", "launch", "firefox.desktop", "https://example.com"])
+  assert.deepEqual(QL.openArgv("firefox.desktop", "https://example.com"), ["uwsm-app", "--", "gtk-launch", "firefox.desktop", "https://example.com"])
   assert.deepEqual(QL.openArgv("", "~/Downloads", "/home/rafa"), ["xdg-open", "/home/rafa/Downloads"])
 })
 
-test("a quicklink is a root-search command and shows a favicon when the link is a site", () => {
+test("a quicklink is a root-search command, and a favicon is opt-in", () => {
   const item = { id: "ql-1", name: "Search DuckDuckGo", link: "https://duckduckgo.com/?q={argument name=\"query\"}", iconName: "", openWith: "" }
   const candidate = QL.toCandidate(item)
   assert.equal(candidate.id, "quicklink:ql-1")
   assert.equal(candidate.type, "quicklink")
   assert.equal(candidate.kind, "quicklink")
   assert.equal(candidate.typeLabel, "Quicklink")
-  assert.match(candidate.iconName, /^https:\/\/icons\.duckduckgo\.com\/ip3\/duckduckgo\.com\.ico$/)
+  assert.equal(candidate.iconName, "")
+  assert.equal(Schema.configDefaults.quicklinkFavicons, false)
+  assert.equal(Schema.withConfigDefaults(null).quicklinkFavicons, false)
+  assert.equal(Schema.withConfigDefaults({ quicklinkFavicons: true }).quicklinkFavicons, true)
+  const hinted = QL.toCandidate(item, { favicons: true })
+  assert.match(hinted.iconName, /^https:\/\/icons\.duckduckgo\.com\/ip3\/duckduckgo\.com\.ico$/)
 
   const sections = RS.rootSections([candidate], "duck", ctx(), deps)
   const hit = sections[0].rows.map((r) => r.candidate).find((c) => c.kind === "quicklink")
@@ -245,6 +252,69 @@ test("a URL query offers Open in Browser and Create Quicklink", () => {
 
   const prose = RS.rootSections([], "not a url", ctx(), deps)
   assert.ok(!prose.some((s) => s.id === "url"))
+})
+
+test("the quicklinks migration keeps a library that is already there", () => {
+  const existing = {
+    items: [
+      { id: "ql-keep", name: " Keep ", link: " https://keep.test ", iconName: "folder-16", openWith: "firefox.desktop", createdAt: 1, updatedAt: 2 },
+      { id: "ql-remote", name: "Remote", link: "https://remote.test", iconName: "https://evil.test/icon.png" },
+      { name: "", link: "https://noname.test" },
+      { name: "No link" },
+      null,
+      "nope"
+    ]
+  }
+  const migrated = Migrate.migrate(existing, Schema.quicklinksMigrations, 9)
+  assert.equal(migrated.doc.schemaVersion, 1)
+  assert.equal(migrated.doc.items.length, 2)
+  assert.equal(migrated.doc.items[0].id, "ql-keep")
+  assert.equal(migrated.doc.items[0].name, "Keep")
+  assert.equal(migrated.doc.items[0].link, "https://keep.test")
+  assert.equal(migrated.doc.items[0].iconName, "folder-16")
+  assert.equal(migrated.doc.items[0].openWith, "firefox.desktop")
+  assert.equal(migrated.doc.items[0].createdAt, 1)
+  assert.equal(migrated.doc.items[1].id, "ql-remote")
+  assert.equal(migrated.doc.items[1].iconName, "")
+})
+
+test("save and import reject a remote icon and leave the library unchanged", () => {
+  const doc = QL.createDocument()
+  const remote = "https://evil.test/a.png"
+  assert.match(QL.save(doc, { name: "X", link: "https://x.test", iconName: remote }, { now: 1 }).error, /icon/i)
+  assert.deepEqual(doc.items, [])
+  assert.match(QL.importText(doc, JSON.stringify([{ name: "X", link: "https://x.test", iconName: remote }]), { now: 1 }).error, /icon/i)
+  assert.deepEqual(doc.items, [])
+  const saved = QL.save(doc, { name: "X", link: "https://x.test", iconName: "folder-16" }, { now: 1, id: "ql-1" })
+  assert.equal(saved.error, "")
+  assert.match(QL.update(saved.doc, { id: "ql-1", iconName: remote }, { now: 2 }).error, /icon/i)
+  assert.equal(QL.get(saved.doc, "ql-1").iconName, "folder-16")
+})
+
+test("an argument option title expands to its value", () => {
+  const link = 'https://x.test/?tone={argument name="tone" options="happy, sad, title: professional"}'
+  assert.equal(QL.expand(link, { arguments: { tone: "title" } }).url, "https://x.test/?tone=professional")
+  assert.equal(QL.expand(link, { arguments: { tone: "professional" } }).url, "https://x.test/?tone=professional")
+  assert.equal(QL.expand(link, { arguments: { tone: "happy" } }).url, "https://x.test/?tone=happy")
+})
+
+test("a URL query needs a scheme and a host, and a hit stays above it", () => {
+  assert.equal(RS.isUrlQuery("http:"), false)
+  assert.equal(RS.isUrlQuery("www."), false)
+  assert.equal(RS.isUrlQuery("a:"), false)
+  assert.equal(RS.isUrlQuery("not a url"), false)
+  assert.equal(RS.isUrlQuery("www.example.com"), true)
+  assert.equal(RS.isUrlQuery("https://example.com/a"), true)
+  assert.equal(RS.isUrlQuery("spotify://track/1"), true)
+
+  assert.ok(!RS.rootSections([], "http:", ctx(), deps).some((s) => s.id === "url"))
+  assert.ok(!RS.rootSections([], "www.", ctx(), deps).some((s) => s.id === "url"))
+
+  const candidate = QL.toCandidate({ id: "ql-1", name: "Example", link: "https://example.com/a", iconName: "", openWith: "" })
+  const sections = RS.rootSections([candidate], "https://example.com/a", ctx(), deps)
+  assert.equal(sections[0].id, "results")
+  assert.equal(sections[0].rows[0].candidate.title, "Example")
+  assert.equal(sections[1].id, "url")
 })
 
 test("Create Quicklink and Search Quicklinks are commands", () => {
