@@ -178,6 +178,7 @@ OverlayWindow {
       window.query,
       window.fieldValue("link"),
       window.fieldValue("openWith"),
+      window.backend.appsReady ? "1" : "0",
       window.backend.candidatesRevision,
       window.backend.dataRevision,
       window.backend.storeRevision,
@@ -387,8 +388,8 @@ OverlayWindow {
   // Empty filter keeps the saved app selected. A search starts at the first match.
   function openWithSelectIndex() {
     if (window.query) return window.nextSelectable(-1, 1)
-    var current = window.fieldValue("openWith")
-    for (var i = 0; i < rows.count; i++) if (rows.get(i).itemId === current) return i
+    var current = window.fieldValue("openWith").toLowerCase()
+    for (var i = 0; i < rows.count; i++) if (String(rows.get(i).itemId || "").toLowerCase() === current) return i
     return window.nextSelectable(-1, 1)
   }
 
@@ -407,7 +408,7 @@ OverlayWindow {
     var choices = result.data || []
     var keepIndex = -1
     for (var r = 0; r < choices.length; r++) {
-      if (keepId !== null && String(choices[r].id || "") === String(keepId)) keepIndex = rows.count
+      if (keepId !== null && String(choices[r].id || "").toLowerCase() === String(keepId).toLowerCase()) keepIndex = rows.count
       rows.append(window.rowData(choices[r], "item"))
     }
     window.listKey = key
@@ -434,6 +435,11 @@ OverlayWindow {
     window.stack = stack
     window.query = ""
     window.rebuild(true)
+  }
+
+  function openWithFieldText(value) {
+    var r = window.backend.callSync("quicklinks.openWithLabel", { id: value || "" })
+    return r.ok && r.data != null ? String(r.data) : String(value || "")
   }
 
   function formPayload() {
@@ -643,6 +649,7 @@ OverlayWindow {
   Connections {
     target: window.backend
     function onCandidatesRevisionChanged() { if (window.shown && !window.actionPanelOpen && (!window.editor || window.pickingApp)) window.rebuild(false) }
+    function onAppsReadyChanged() { if (window.shown && window.pickingApp) window.rebuild(true) }
     function onQuicklinkReady(outcome) { window.applyLaunchOutcome(outcome) }
   }
 
@@ -833,8 +840,9 @@ OverlayWindow {
               text: {
                 var focused = index === (window.view.focus || 0)
                 if (modelData.picker === "app") {
+                  window.backend.appsReady
                   if (focused && window.query) return window.query
-                  return String(modelData.display || modelData.value || "")
+                  return window.openWithFieldText(modelData.value)
                 }
                 return focused ? window.query : String(modelData.value || "")
               }
@@ -998,6 +1006,22 @@ OverlayWindow {
           visible: footerActions.primary !== null
           anchors.verticalCenter: parent.verticalCenter
           keys: "↵"
+          color: window.look.foreground
+          zoom: window.zoom
+        }
+        Text {
+          visible: window.pickingApp
+          anchors.verticalCenter: parent.verticalCenter
+          textFormat: Text.PlainText
+          text: "Save Quicklink"
+          color: window.look.foreground
+          font.family: window.look.fontFamily
+          font.pixelSize: Math.round(Style.font.bodySmall * window.zoom)
+        }
+        KeyHint {
+          visible: window.pickingApp
+          anchors.verticalCenter: parent.verticalCenter
+          keys: "Ctrl ↵"
           color: window.look.foreground
           zoom: window.zoom
         }

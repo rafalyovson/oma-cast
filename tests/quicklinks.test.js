@@ -386,6 +386,77 @@ test("openWith has to be a desktop id", () => {
   assert.equal(QL.get(ok.doc, "ql-app").openWith, "org.gnome.Music.desktop")
 })
 
+test("an unfinished app index checks only the desktop id and shows it raw", () => {
+  const doc = QL.createDocument()
+  const saved = QL.save(doc, { name: "Early", link: "https://x.test", openWith: "firefox.desktop" }, { now: 1, id: "ql-early", installed: null })
+  assert.equal(saved.error, "")
+  assert.equal(saved.item.openWith, "firefox.desktop")
+  assert.match(QL.save(doc, { name: "Empty", link: "https://y.test", openWith: "firefox.desktop" }, { now: 1, installed: [] }).error, /installed/i)
+  assert.equal(QL.openWithLabel(null, "firefox.desktop"), "firefox.desktop")
+  assert.equal(QL.openWithLabel([], "firefox.desktop", { ready: false }), "firefox.desktop")
+  assert.equal(QL.openWithLabel([], "firefox.desktop"), "firefox.desktop (not installed)")
+  const pending = QL.openWithChoices(null, { ready: false, query: "", current: "firefox.desktop", link: "https://x.test" })
+  assert.equal(pending[0].title, "Default (browser / xdg-open)")
+  assert.equal(pending[1].id, "firefox.desktop")
+  assert.equal(pending[1].title, "firefox.desktop")
+  assert.equal(pending[1].missing, false)
+})
+
+test("Open With accepts NoDisplay and launcher-hidden entries in the catalog", () => {
+  const catalog = [
+    { id: "firefox", name: "Firefox", noDisplay: false },
+    { id: "firefox-url-handler.desktop", name: "Firefox Handler", noDisplay: true },
+    { id: "hidden-notes.desktop", name: "Hidden Notes", hidden: true }
+  ]
+  const doc = QL.createDocument()
+  const saved = QL.save(doc, { name: "Handler", link: "https://x.test", openWith: "firefox-url-handler.desktop" }, { now: 1, id: "ql-handler", installed: catalog })
+  assert.equal(saved.error, "")
+  assert.equal(saved.item.openWith, "firefox-url-handler.desktop")
+  assert.equal(QL.openWithLabel(catalog, "hidden-notes.desktop"), "Hidden Notes")
+  const choices = QL.openWithChoices(catalog, { link: "https://x.test", query: "", current: "firefox-url-handler.desktop" })
+  assert.ok(choices.some((row) => row.id === "firefox-url-handler.desktop" && row.title === "Firefox Handler" && row.missing === false))
+  assert.ok(choices.some((row) => row.id === "hidden-notes.desktop" && row.missing === false))
+  assert.equal(QL.importText(doc, JSON.stringify([{ name: "Notes", link: "notes://x", openWith: "hidden-notes.desktop" }]), { now: 2, installed: catalog }).error, "")
+})
+
+test("a different letter case is stored as the installed entry's id", () => {
+  const apps = [{ id: "firefox", name: "Firefox", icon: "firefox" }]
+  const doc = QL.createDocument()
+  const saved = QL.save(doc, { name: "Browser", link: "https://x.test", openWith: "Firefox.desktop" }, { now: 1, id: "ql-case", installed: apps })
+  assert.equal(saved.error, "")
+  assert.equal(saved.item.openWith, "firefox.desktop")
+  assert.equal(QL.openWithLabel(apps, "Firefox.desktop"), "Firefox")
+  const imported = QL.importText(doc, JSON.stringify([{ name: "Other", link: "https://y.test", openWith: "FIREFOX.desktop" }]), { now: 2, installed: apps })
+  assert.equal(imported.error, "")
+  assert.equal(imported.doc.items.filter((item) => item.name === "Other")[0].openWith, "firefox.desktop")
+  const both = [{ id: "App.desktop", name: "Upper" }, { id: "app.desktop", name: "Lower" }]
+  assert.equal(QL.save(doc, { name: "Exact", link: "https://a.test", openWith: "App.desktop" }, { now: 3, installed: both }).item.openWith, "App.desktop")
+  assert.match(QL.save(doc, { name: "Ambiguous", link: "https://b.test", openWith: "APP.desktop" }, { now: 3, installed: both }).error, /installed/i)
+  const choices = QL.openWithChoices(apps, { link: "https://x.test", query: "", current: "Firefox.desktop" })
+  assert.equal(choices.filter((row) => row.missing).length, 0)
+  assert.ok(choices.some((row) => row.id === "firefox.desktop"))
+})
+
+test("Open With says Enter selects the app and Ctrl+Enter saves", () => {
+  const fs = require("node:fs")
+  const path = require("node:path")
+  const qml = fs.readFileSync(path.join(__dirname, "../plugin/ui/LauncherWindow.qml"), "utf8")
+  const docs = fs.readFileSync(path.join(__dirname, "../CLAUDE.md"), "utf8")
+  assert.match(qml, /title: "Select App"/)
+  assert.match(qml, /text: "Save Quicklink"/)
+  assert.match(qml, /keys: "Ctrl ↵"/)
+  assert.match(docs, /Enter selects the highlighted app and Ctrl\+Enter saves the quicklink/)
+})
+
+test("opening refuses an uninstalled app once the index is loaded", () => {
+  const apps = [{ id: "firefox.desktop", name: "Firefox" }]
+  assert.deepEqual(QL.prepareOpen("", apps, true), { ok: true, openWith: "", error: "" })
+  assert.deepEqual(QL.prepareOpen("Firefox.desktop", apps, true), { ok: true, openWith: "firefox.desktop", error: "" })
+  assert.deepEqual(QL.prepareOpen("gone.desktop", apps, true), { ok: false, openWith: "gone.desktop", error: "gone.desktop is not installed" })
+  assert.deepEqual(QL.prepareOpen("gone.desktop", [], false), { ok: true, openWith: "gone.desktop", error: "" })
+  assert.deepEqual(QL.prepareOpen("gone.desktop", null, false), { ok: true, openWith: "gone.desktop", error: "" })
+})
+
 test("randomUuid sets the version 4 and variant bits", () => {
   for (let i = 0; i < 40; i++) {
     assert.match(QL.randomUuid(), /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)

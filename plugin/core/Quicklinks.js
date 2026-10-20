@@ -54,9 +54,9 @@ function buildItem(input, id, now, ctx) {
   if (parsed.error) return { error: parsed.error }
   var iconName = String(input.iconName || "").trim()
   if (iconName.indexOf("://") >= 0) return { error: "Quicklink iconName cannot be a remote URL" }
-  var openWith = String(input.openWith || "").trim()
-  var openWithError = openWithProblem(openWith, ctx)
-  if (openWithError) return { error: openWithError }
+  var resolved = resolveStoredOpenWith(input && input.openWith, ctx)
+  if (resolved.error) return { error: resolved.error }
+  var openWith = resolved.id
   return {
     error: "",
     item: {
@@ -77,8 +77,8 @@ function isDesktopId(app) {
   return /^[A-Za-z0-9][A-Za-z0-9_.+-]*\.desktop$/.test(String(app || ""))
 }
 
-function stemOf(id) {
-  return String(id || "").replace(/\.desktop$/i, "").toLowerCase()
+function stemExact(id) {
+  return String(id || "").replace(/\.desktop$/i, "")
 }
 
 function canonicalDesktopId(id) {
@@ -109,7 +109,8 @@ function mimeList(entry) {
   return []
 }
 
-// The same desktop entries the app search already uses. id may omit ".desktop".
+// Every desktop entry the caller hands in, including NoDisplay and apps the
+// launcher hides. id may omit ".desktop". This is not the visible app list.
 function installedApps(entries) {
   var out = []
   var list = entries || []
@@ -128,20 +129,57 @@ function installedApps(entries) {
   return out
 }
 
-function appInstalled(openWith, apps) {
-  var stem = stemOf(openWith)
-  for (var i = 0; i < apps.length; i++) if (stemOf(apps[i].id) === stem) return true
-  return false
+// Exact stem first. A unique case-insensitive hit is the same app, so the
+// stored id can be the entry's real id. Two entries that differ only by case
+// do not match a third spelling.
+function findApp(openWith, apps) {
+  var exact = stemExact(openWith)
+  var lower = exact.toLowerCase()
+  var folded = null
+  var foldedCount = 0
+  for (var i = 0; i < apps.length; i++) {
+    var stem = stemExact(apps[i].id)
+    if (stem === exact) return apps[i]
+    if (stem.toLowerCase() === lower) {
+      folded = apps[i]
+      foldedCount++
+    }
+  }
+  return foldedCount === 1 ? folded : null
 }
 
-function openWithProblem(openWith, ctx) {
-  if (!openWith) return ""
-  if (!isDesktopId(openWith)) return "Quicklink openWith must be a desktop id"
-  if (!ctx || !ctx.installed) return ""
-  var allow = ctx.allowOpenWith ? canonicalDesktopId(ctx.allowOpenWith) : ""
-  if (allow && stemOf(allow) === stemOf(openWith)) return ""
-  if (!appInstalled(openWith, installedApps(ctx.installed))) return "Quicklink openWith is not an installed app"
-  return ""
+// null installed means the desktop index is not ready yet: check the id
+// shape only. An array, including an empty one, is a finished catalog.
+function catalogReady(entries, opts) {
+  if (opts && opts.ready === false) return false
+  if (opts && opts.ready === true) return true
+  return entries != null
+}
+
+function resolveStoredOpenWith(openWith, ctx) {
+  var id = String(openWith || "").trim()
+  if (!id) return { error: "", id: "" }
+  if (!isDesktopId(id)) return { error: "Quicklink openWith must be a desktop id", id: "" }
+  var ready = ctx && ctx.installed != null
+  if (!ready) return { error: "", id: id }
+  var app = findApp(id, installedApps(ctx.installed))
+  if (app) return { error: "", id: app.id }
+  var allow = ctx.allowOpenWith ? canonicalDesktopId(String(ctx.allowOpenWith).trim()) : ""
+  if (allow && stemExact(allow) === stemExact(id)) return { error: "", id: allow }
+  return { error: "Quicklink openWith is not an installed app", id: "" }
+}
+
+// When the index is loaded and the app is gone, the open is refused so the
+// caller can toast and skip the visit. Before the index is ready, the stored
+// id is launched as written.
+function prepareOpen(openWith, entries, ready) {
+  var id = String(openWith || "").trim()
+  if (!id) return { ok: true, openWith: "", error: "" }
+  if (!isDesktopId(id)) return { ok: false, openWith: id, error: "Open with must be a desktop id" }
+  if (!ready) return { ok: true, openWith: id, error: "" }
+  var app = findApp(id, installedApps(entries))
+  if (!app) return { ok: false, openWith: id, error: id + " is not installed" }
+  return { ok: true, openWith: app.id, error: "" }
 }
 
 function linkScheme(link) {
@@ -175,12 +213,12 @@ function byAppName(a, b) {
 
 var DEFAULT_OPEN_WITH = "Default (browser / xdg-open)"
 
-function openWithLabel(entries, id) {
+function openWithLabel(entries, id, opts) {
   var current = String(id || "").trim()
   if (!current) return DEFAULT_OPEN_WITH
-  var apps = installedApps(entries)
-  var stem = stemOf(current)
-  for (var i = 0; i < apps.length; i++) if (stemOf(apps[i].id) === stem) return apps[i].name
+  if (!catalogReady(entries, opts)) return current
+  var app = findApp(current, installedApps(entries))
+  if (app) return app.name
   return current + " (not installed)"
 }
 
@@ -188,29 +226,54 @@ function openWithLabel(entries, id) {
 // when the entry has mimeTypes or a mimeType string. Quickshell 0.3.2's
 // DesktopEntry does not expose MimeType, so a live entry sorts with the rest.
 // A saved id that is not installed stays in the list so edit can keep it.
+function importOpenWithIds(jsonString) {
+  var parsed
+  try {
+    parsed = JSON.parse(String(jsonString || ""))
+  } catch (e) {
+    return []
+  }
+  if (!Array.isArray(parsed)) return []
+  var ids = []
+  for (var i = 0; i < parsed.length; i++) {
+    var row = parsed[i]
+    if (!row || typeof row !== "object" || Array.isArray(row) || !row.openWith) continue
+    ids.push(String(row.openWith))
+  }
+  return ids
+}
+
 function openWithChoices(entries, opts) {
   var options = opts || {}
   var query = String(options.query || "").trim().toLowerCase()
   var scheme = linkScheme(options.link)
   var current = String(options.current || "").trim()
+  var rows = []
+  if (!catalogReady(entries, options)) {
+    if (textMatches(DEFAULT_OPEN_WITH, query)) {
+      rows.push({ id: "", title: DEFAULT_OPEN_WITH, iconName: "", subtitle: "", missing: false, glyph: "\uf0ac" })
+    }
+    if (current && isDesktopId(current) && textMatches(current, query)) {
+      rows.push({ id: current, title: current, iconName: "", subtitle: "", missing: false, glyph: "" })
+    }
+    return rows
+  }
   var apps = installedApps(entries)
   var handlers = []
   var rest = []
-  var seen = {}
+  var matched = current ? findApp(current, apps) : null
   for (var i = 0; i < apps.length; i++) {
     var app = apps[i]
-    seen[stemOf(app.id)] = true
-    if (!textMatches(app.name + " " + app.id + " " + stemOf(app.id), query)) continue
+    if (!textMatches(app.name + " " + app.id + " " + stemExact(app.id), query)) continue
     if (handlesScheme(app, scheme)) handlers.push(app)
     else rest.push(app)
   }
   handlers.sort(byAppName)
   rest.sort(byAppName)
-  var rows = []
   if (textMatches(DEFAULT_OPEN_WITH, query)) {
     rows.push({ id: "", title: DEFAULT_OPEN_WITH, iconName: "", subtitle: "", missing: false, glyph: "\uf0ac" })
   }
-  if (current && isDesktopId(current) && !seen[stemOf(current)] && textMatches(current + " (not installed)", query)) {
+  if (current && isDesktopId(current) && !matched && textMatches(current + " (not installed)", query)) {
     rows.push({ id: current, title: current + " (not installed)", iconName: "", subtitle: "", missing: true, glyph: "" })
   }
   for (var h = 0; h < handlers.length; h++) {
@@ -851,6 +914,8 @@ if (typeof module !== "undefined") {
     installedApps: installedApps,
     openWithChoices: openWithChoices,
     openWithLabel: openWithLabel,
+    prepareOpen: prepareOpen,
+    importOpenWithIds: importOpenWithIds,
     browserArgv: browserArgv,
     toCandidate: toCandidate,
     candidateItems: candidateItems,

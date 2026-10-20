@@ -25,6 +25,9 @@ Item {
 
   // Omarchy's shared app library (shell.appLibrary), injected by Launcher.qml.
   property var appLibrary: null
+  // False until DesktopEntries has finished its first scan. An empty list
+  // before that is not "no apps are installed".
+  property bool appsReady: false
   // Asks the shell to summon a plugin in-process; injected by Launcher.qml.
   property var summon: null
 
@@ -76,6 +79,36 @@ Item {
     if (backend.appLibrary) return backend.appLibrary.sortedEntries("").map(function(row) { return row.entry })
     // Outside a menu-kind load the shell hands us no library; read entries directly.
     return (DesktopEntries.applications.values || []).filter(function(e) { return !e.noDisplay })
+  }
+
+  // Every installed application Quickshell indexed, including ones the launcher
+  // hides. applications.values omits NoDisplay, so a looked-up id is added
+  // from byId, which still has those entries.
+  function desktopCatalog(extraIds) {
+    var values = DesktopEntries.applications.values || []
+    var list = []
+    var seen = ({})
+    for (var i = 0; i < values.length; i++) {
+      var entry = values[i]
+      if (!entry) continue
+      list.push(entry)
+      if (entry.id) seen[String(entry.id)] = true
+    }
+    var extras = extraIds || []
+    for (var j = 0; j < extras.length; j++) {
+      var stem = String(extras[j] || "").trim().replace(/\.desktop$/i, "")
+      if (!stem || seen[stem]) continue
+      var found = DesktopEntries.byId ? DesktopEntries.byId(stem) : null
+      if (!found || !found.id || seen[String(found.id)]) continue
+      list.push(found)
+      seen[String(found.id)] = true
+    }
+    return list
+  }
+
+  function installedCatalog(extraIds) {
+    if (!backend.appsReady) return null
+    return backend.desktopCatalog(extraIds || [])
   }
 
   function rebuildCandidates() {
@@ -172,8 +205,8 @@ Item {
   }
 
   function quicklinkForm(mode, item) {
-    var apps = backend.appEntries()
     var openWith = item && item.openWith ? String(item.openWith) : ""
+    var apps = backend.installedCatalog([openWith])
     return {
       kind: "quicklink-form",
       mode: mode,
@@ -183,7 +216,7 @@ Item {
       fields: [
         { key: "name", label: "Name", value: item && item.name ? item.name : "" },
         { key: "link", label: "Link", value: item && item.link ? item.link : "" },
-        { key: "openWith", label: "Open with", value: openWith, display: Quicklinks.openWithLabel(apps, openWith), picker: "app" }
+        { key: "openWith", label: "Open with", value: openWith, display: Quicklinks.openWithLabel(apps, openWith, { ready: backend.appsReady }), picker: "app" }
       ]
     }
   }
@@ -238,7 +271,9 @@ Item {
       uuid: Quicklinks.randomUuid()
     })
     if (!expanded.ok) return { toast: { style: "failure", title: expanded.error || "Could not expand link" } }
-    var argv = Quicklinks.openArgv(openWith, expanded.url, backend.paths.home)
+    var prepared = Quicklinks.prepareOpen(openWith, backend.installedCatalog([openWith]), backend.appsReady)
+    if (!prepared.ok) return { toast: { style: "failure", title: prepared.error } }
+    var argv = Quicklinks.openArgv(prepared.openWith, expanded.url, backend.paths.home)
     if (!argv) {
       var target = String(expanded.url || "").trim()
       var title = !target || target.charAt(0) === "-" ? "Link cannot start with -" : "Open with must be a desktop id"
@@ -332,7 +367,7 @@ Item {
       if (read.error) throw new Error("Could not read " + path + ": " + read.error)
       body = read.text
     }
-    var result = Quicklinks.importText(quicklinksStore.doc, body, { now: Date.now(), installed: backend.appEntries() })
+    var result = Quicklinks.importText(quicklinksStore.doc, body, { now: Date.now(), installed: backend.installedCatalog(Quicklinks.importOpenWithIds(body)) })
     if (result.error) throw new Error(result.error)
     quicklinksStore.update(function() { return result.doc })
     backend.emit("quicklinks.updated", null)
@@ -551,11 +586,17 @@ Item {
     Rpc.register(backend.registry, "quicklinks", {
       list: function() { return quicklinksStore.loaded ? Quicklinks.list(quicklinksStore.doc) : [] },
       openWithChoices: function(data) {
-        return Quicklinks.openWithChoices(backend.appEntries(), {
+        var current = data && data.current
+        return Quicklinks.openWithChoices(backend.installedCatalog([current]), {
           query: data && data.query,
           link: data && data.link,
-          current: data && data.current
+          current: current,
+          ready: backend.appsReady
         })
+      },
+      openWithLabel: function(data) {
+        var id = data && (data.id != null ? data.id : data.openWith)
+        return Quicklinks.openWithLabel(backend.installedCatalog([id]), id, { ready: backend.appsReady })
       },
       getQuicklink: function(data) {
         var item = backend.quicklinkById(String(data && data.id || ""))
@@ -565,7 +606,7 @@ Item {
       save: function(data) {
         if (!quicklinksStore.loaded) throw new Error("quicklinks not loaded")
         if (quicklinksStore.readOnly) throw new Error("quicklinks are read-only")
-        var result = Quicklinks.save(quicklinksStore.doc, data || {}, { now: Date.now(), installed: backend.appEntries() })
+        var result = Quicklinks.save(quicklinksStore.doc, data || {}, { now: Date.now(), installed: backend.installedCatalog([data && data.openWith]) })
         if (result.error) throw new Error(result.error)
         quicklinksStore.update(function() { return result.doc })
         backend.emit("quicklinks.updated", { id: result.item.id })
@@ -574,7 +615,9 @@ Item {
       update: function(data) {
         if (!quicklinksStore.loaded) throw new Error("quicklinks not loaded")
         if (quicklinksStore.readOnly) throw new Error("quicklinks are read-only")
-        var result = Quicklinks.update(quicklinksStore.doc, data || {}, { now: Date.now(), installed: backend.appEntries() })
+        var existing = backend.quicklinkById(String(data && data.id || ""))
+        var hinted = data && data.openWith !== undefined ? data.openWith : (existing && existing.openWith)
+        var result = Quicklinks.update(quicklinksStore.doc, data || {}, { now: Date.now(), installed: backend.installedCatalog([hinted, existing && existing.openWith]) })
         if (result.error) throw new Error(result.error)
         quicklinksStore.update(function() { return result.doc })
         backend.emit("quicklinks.updated", { id: result.item.id })
@@ -622,6 +665,8 @@ Item {
   Component.onCompleted: {
     registerServices()
     mkdirs.running = true
+    var indexed = DesktopEntries.applications.values || []
+    if (indexed.length > 0) backend.appsReady = true
   }
 
   onAppLibraryChanged: rebuildTimer.restart()
@@ -633,9 +678,18 @@ Item {
   }
 
   Connections {
-    target: backend.appLibrary ? null : DesktopEntries.applications
+    target: DesktopEntries
+    function onApplicationsChanged() { backend.appsReady = true }
+  }
+
+  Connections {
+    target: DesktopEntries.applications
     ignoreUnknownSignals: true
-    function onValuesChanged() { rebuildTimer.restart() }
+    function onValuesChanged() {
+      var indexed = DesktopEntries.applications.values || []
+      if (indexed.length > 0) backend.appsReady = true
+      if (!backend.appLibrary) rebuildTimer.restart()
+    }
   }
 
   // Guards and providers describe live system state. Wait until the layer
