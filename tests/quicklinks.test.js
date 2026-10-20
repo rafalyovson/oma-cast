@@ -197,9 +197,9 @@ test("uuid is filled in, and snippet, calculator, cursor, and browser-tab are re
 })
 
 test("opening uses xdg-open, or uwsm-app gtk-launch when an app is chosen", () => {
-  assert.deepEqual(QL.openArgv("", "https://example.com"), ["xdg-open", "https://example.com"])
-  assert.deepEqual(QL.openArgv("firefox.desktop", "https://example.com"), ["uwsm-app", "--", "gtk-launch", "firefox.desktop", "https://example.com"])
-  assert.deepEqual(QL.openArgv("", "~/Downloads", "/home/rafa"), ["xdg-open", "/home/rafa/Downloads"])
+  assert.deepEqual(QL.openArgv("", "https://example.com"), ["xdg-open", "--", "https://example.com"])
+  assert.deepEqual(QL.openArgv("firefox.desktop", "https://example.com"), ["uwsm-app", "--", "gtk-launch", "--", "firefox.desktop", "https://example.com"])
+  assert.deepEqual(QL.openArgv("", "~/Downloads", "/home/rafa"), ["xdg-open", "--", "/home/rafa/Downloads"])
 })
 
 test("a quicklink is a root-search command, and a favicon is opt-in", () => {
@@ -215,6 +215,10 @@ test("a quicklink is a root-search command, and a favicon is opt-in", () => {
   assert.equal(Schema.withConfigDefaults({ quicklinkFavicons: true }).quicklinkFavicons, true)
   const hinted = QL.toCandidate(item, { favicons: true })
   assert.match(hinted.iconName, /^https:\/\/icons\.duckduckgo\.com\/ip3\/duckduckgo\.com\.ico$/)
+  const http = QL.toCandidate({ id: "ql-http", name: "Http", link: "http://example.com", iconName: "", openWith: "" }, { favicons: true })
+  assert.equal(http.iconName, "")
+  const remote = QL.toCandidate({ id: "ql-remote", name: "Remote", link: "https://example.com", iconName: "https://evil.test/a.png", openWith: "" }, { favicons: true })
+  assert.match(remote.iconName, /^https:\/\/icons\.duckduckgo\.com\/ip3\/example\.com\.ico$/)
 
   const sections = RS.rootSections([candidate], "duck", ctx(), deps)
   const hit = sections[0].rows.map((r) => r.candidate).find((c) => c.kind === "quicklink")
@@ -302,6 +306,7 @@ test("a URL query needs a scheme and a host, and a hit stays above it", () => {
   assert.equal(RS.isUrlQuery("http:"), false)
   assert.equal(RS.isUrlQuery("www."), false)
   assert.equal(RS.isUrlQuery("a:"), false)
+  assert.equal(RS.isUrlQuery("word:value"), false)
   assert.equal(RS.isUrlQuery("not a url"), false)
   assert.equal(RS.isUrlQuery("www.example.com"), true)
   assert.equal(RS.isUrlQuery("https://example.com/a"), true)
@@ -309,12 +314,46 @@ test("a URL query needs a scheme and a host, and a hit stays above it", () => {
 
   assert.ok(!RS.rootSections([], "http:", ctx(), deps).some((s) => s.id === "url"))
   assert.ok(!RS.rootSections([], "www.", ctx(), deps).some((s) => s.id === "url"))
+  assert.ok(!RS.rootSections([], "word:value", ctx(), deps).some((s) => s.id === "url"))
 
   const candidate = QL.toCandidate({ id: "ql-1", name: "Example", link: "https://example.com/a", iconName: "", openWith: "" })
   const sections = RS.rootSections([candidate], "https://example.com/a", ctx(), deps)
   assert.equal(sections[0].id, "results")
   assert.equal(sections[0].rows[0].candidate.title, "Example")
   assert.equal(sections[1].id, "url")
+})
+
+test("a quoted brace stays inside the attribute", () => {
+  const parsed = QL.parseLink('{argument name="a}b" default="x}y"}')
+  assert.equal(parsed.error, "")
+  assert.equal(parsed.arguments[0].name, "a}b")
+  assert.equal(parsed.arguments[0].defaultValue, "x}y")
+  assert.equal(QL.expand('{argument name="a}b"}', { arguments: { "a}b": "ok" } }).url, "ok")
+})
+
+test("import says a non-object row is invalid", () => {
+  const doc = QL.createDocument()
+  for (const row of [null, "nope", []]) {
+    const result = QL.importText(doc, JSON.stringify([row]), { now: 1 })
+    assert.match(result.error, /invalid/i)
+    assert.doesNotMatch(result.error, /needs a link/i)
+  }
+  assert.deepEqual(doc.items, [])
+})
+
+test("candidates drop items that are not objects with string id, name, and link", () => {
+  const doc = {
+    items: [
+      { id: "ql-1", name: "Ok", link: "https://ok.test" },
+      { id: 2, name: "Num", link: "https://n.test" },
+      { id: "ql-3", name: "No link" },
+      null,
+      ["ql-4", "Arr", "https://a.test"],
+      { id: "ql-5", name: "Also", link: "https://also.test" }
+    ]
+  }
+  assert.deepEqual(QL.candidateItems(doc).map((item) => item.id), ["ql-1", "ql-5"])
+  assert.equal(QL.toCandidate({ id: 2, name: "Num", link: "https://n.test" }), null)
 })
 
 test("Create Quicklink and Search Quicklinks are commands", () => {
